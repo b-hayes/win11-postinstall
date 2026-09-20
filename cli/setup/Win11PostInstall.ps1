@@ -72,6 +72,7 @@ Write-Host "  [11] Take Ownership Menu  - adds Take Ownership to right-click for
 Write-Host "  [12] Dark Mode & Appearance - dark mode, accent on taskbar/borders, auto accent from wallpaper" -ForegroundColor Gray
 Write-Host "  [13] Explorer Settings    - hidden files, file extensions, separate process, start at This PC" -ForegroundColor Gray
 Write-Host "  [14] Chris Titus WinUtil  - optional interactive tweaks and software install" -ForegroundColor Gray
+Write-Host "  [15] Unattend Parity      - settings our install template sets (for manual installs)" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Steps already done will be skipped automatically." -ForegroundColor DarkGray
 Write-Host "  A restart will be offered at the end if anything needs it." -ForegroundColor DarkGray
@@ -774,6 +775,69 @@ if ($runCTT -match '^[Yy]') {
 } else {
     Write-Skip "Skipping WinUtil"
     Write-Host "  Run it later with:  irm christitus.com/win | iex" -ForegroundColor DarkGray
+}
+
+# ============================================================
+# 15. UNATTEND PARITY TWEAKS
+#     Settings our autounattend.xml applies during setup. Useful only when
+#     Windows was installed manually (not via our Ventoy template), so this
+#     brings a hand-installed machine up to the same baseline.
+# ============================================================
+Write-Header "Unattend Parity Tweaks"
+Write-Host "  Applies the UI/system tweaks our install template normally sets:" -ForegroundColor White
+Write-Host "    - Taskbar search box hidden" -ForegroundColor Gray
+Write-Host "    - 'End Task' added to taskbar right-click menu" -ForegroundColor Gray
+Write-Host "    - Start menu pins emptied" -ForegroundColor Gray
+Write-Host "    - Window transparency on" -ForegroundColor Gray
+Write-Host "    - Sticky Keys shortcut disabled" -ForegroundColor Gray
+Write-Host "    - Edge desktop shortcut removed" -ForegroundColor Gray
+Write-Host "    - Lock screen after update sign-in prompt disabled" -ForegroundColor Gray
+Write-Host "    - Device metadata download and driver co-installers blocked" -ForegroundColor Gray
+Write-Host "    - Internet Explorer feature removed" -ForegroundColor Gray
+Write-Host "  Skip this if you installed with our unattend template - it is already applied." -ForegroundColor DarkGray
+$searchBox = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "SearchboxTaskbarMode" -EA SilentlyContinue).SearchboxTaskbarMode
+if ($searchBox -eq 0) {
+    Write-Skip "Unattend parity tweaks already applied"
+} else {
+    $doParity = Read-Host "  Apply unattend parity tweaks? [y/N]"
+    if ($doParity -match '^[Yy]') {
+        $adv = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+
+        Write-Step "Hiding taskbar search box..."
+        Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 0
+
+        Write-Step "Adding 'End Task' to taskbar right-click menu..."
+        Set-Reg "$adv\TaskbarDeveloperSettings" "TaskbarEndTask" 1
+
+        Write-Step "Emptying Start menu pins..."
+        Set-RegStr "HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start" "ConfigureStartPins" '{"pinnedList":[]}'
+
+        Write-Step "Enabling window transparency..."
+        Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "EnableTransparency" 1
+
+        Write-Step "Disabling Sticky Keys shortcut..."
+        Set-RegStr "HKCU:\Control Panel\Accessibility\StickyKeys" "Flags" "506"
+
+        Write-Step "Removing Edge desktop shortcut..."
+        Remove-Item "$env:PUBLIC\Desktop\Microsoft Edge.lnk", "$env:USERPROFILE\Desktop\Microsoft Edge.lnk" -Force -EA SilentlyContinue
+
+        Write-Step "Disabling lock screen after update sign-in prompt..."
+        Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "DisableAutomaticRestartSignOn" 1
+
+        Write-Step "Blocking device metadata download and driver co-installers..."
+        Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" 1
+        Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Installer" "DisableCoInstallers" 1
+
+        Write-Step "Removing Internet Explorer feature..."
+        Get-WindowsCapability -Online -EA SilentlyContinue |
+            Where-Object { $_.Name -like 'Browser.InternetExplorer*' -and $_.State -eq 'Installed' } |
+            ForEach-Object { Remove-WindowsCapability -Online -Name $_.Name -EA SilentlyContinue | Out-Null }
+
+        Write-Done "Unattend parity tweaks applied"
+        $restartReasons += "Unattend parity tweaks - some take effect after restart"
+    } else {
+        Write-Skip "Skipping unattend parity tweaks"
+    }
 }
 
 # ============================================================
