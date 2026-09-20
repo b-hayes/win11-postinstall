@@ -22,6 +22,10 @@ if (-not $isAdmin) {
     return
 }
 
+# Allow the downloaded .ps1 files to run in this process regardless of the
+# machine's execution policy (process scope only, no admin needed, not persisted).
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction SilentlyContinue
+
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $dir = Join-Path $env:TEMP 'win11-postinstall'
