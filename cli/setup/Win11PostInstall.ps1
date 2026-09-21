@@ -72,7 +72,7 @@ Write-Host "  [11] Take Ownership Menu  - adds Take Ownership to right-click for
 Write-Host "  [12] Dark Mode & Appearance - dark mode, accent on taskbar/borders, auto accent from wallpaper" -ForegroundColor Gray
 Write-Host "  [13] Explorer Settings    - hidden files, file extensions, separate process, start at This PC" -ForegroundColor Gray
 Write-Host "  [14] Chris Titus WinUtil  - optional interactive tweaks and software install" -ForegroundColor Gray
-Write-Host "  [15] Unattend Parity      - settings our install template sets (for manual installs)" -ForegroundColor Gray
+Write-Host "  [15] Extra UI & System    - search box, taskbar, transparency, IE removal, misc tweaks" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Steps already done will be skipped automatically." -ForegroundColor DarkGray
 Write-Host "  A restart will be offered at the end if anything needs it." -ForegroundColor DarkGray
@@ -778,13 +778,10 @@ if ($runCTT -match '^[Yy]') {
 }
 
 # ============================================================
-# 15. UNATTEND PARITY TWEAKS
-#     Settings our autounattend.xml applies during setup. Useful only when
-#     Windows was installed manually (not via our Ventoy template), so this
-#     brings a hand-installed machine up to the same baseline.
+# 15. EXTRA UI & SYSTEM TWEAKS
 # ============================================================
-Write-Header "Unattend Parity Tweaks"
-Write-Host "  Applies the UI/system tweaks our install template normally sets:" -ForegroundColor White
+Write-Header "Extra UI & System Tweaks"
+Write-Host "  Will apply:" -ForegroundColor White
 Write-Host "    - Taskbar search box hidden" -ForegroundColor Gray
 Write-Host "    - 'End Task' added to taskbar right-click menu" -ForegroundColor Gray
 Write-Host "    - Start menu pins emptied" -ForegroundColor Gray
@@ -794,13 +791,12 @@ Write-Host "    - Edge desktop shortcut removed" -ForegroundColor Gray
 Write-Host "    - Lock screen after update sign-in prompt disabled" -ForegroundColor Gray
 Write-Host "    - Device metadata download and driver co-installers blocked" -ForegroundColor Gray
 Write-Host "    - Internet Explorer feature removed" -ForegroundColor Gray
-Write-Host "  Skip this if you installed with our unattend template - it is already applied." -ForegroundColor DarkGray
 $searchBox = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "SearchboxTaskbarMode" -EA SilentlyContinue).SearchboxTaskbarMode
 if ($searchBox -eq 0) {
-    Write-Skip "Unattend parity tweaks already applied"
+    Write-Skip "Extra UI & system tweaks already applied"
 } else {
-    $doParity = Read-Host "  Apply unattend parity tweaks? [y/N]"
-    if ($doParity -match '^[Yy]') {
+    $doExtra = Read-Host "  Apply these tweaks? [y/N]"
+    if ($doExtra -match '^[Yy]') {
         $adv = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
 
         Write-Step "Hiding taskbar search box..."
@@ -833,10 +829,10 @@ if ($searchBox -eq 0) {
             Where-Object { $_.Name -like 'Browser.InternetExplorer*' -and $_.State -eq 'Installed' } |
             ForEach-Object { Remove-WindowsCapability -Online -Name $_.Name -EA SilentlyContinue | Out-Null }
 
-        Write-Done "Unattend parity tweaks applied"
-        $restartReasons += "Unattend parity tweaks - some take effect after restart"
+        Write-Done "Extra UI & system tweaks applied"
+        $restartReasons += "Extra UI & system tweaks - some take effect after restart"
     } else {
-        Write-Skip "Skipping unattend parity tweaks"
+        Write-Skip "Skipping extra UI & system tweaks"
     }
 }
 
