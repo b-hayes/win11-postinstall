@@ -61,7 +61,7 @@ Write-Host "  [1]  Computer Name        - rename this machine" -ForegroundColor 
 Write-Host "  [2]  Telemetry & Privacy  - registry tweaks to kill data collection" -ForegroundColor Gray
 Write-Host "  [3]  Cortana & Web Search - disable Cortana, Start menu web results" -ForegroundColor Gray
 Write-Host "  [3b] Copilot & Recall     - offer to run bin/copilot-removal (Copilot, Recall, reinstall guard)" -ForegroundColor Gray
-Write-Host "  [4]  Win11 Adware Tweaks  - widgets off, Teams chat icon off, tip notifications off" -ForegroundColor Gray
+Write-Host "  [4]  Win11 Adware Tweaks  - widgets off, Teams chat icon off, tips/boot setup page off" -ForegroundColor Gray
 Write-Host "  [5]  Bloatware Removal    - uninstall built-in Microsoft/third-party apps" -ForegroundColor Gray
 Write-Host "  [6]  Hibernation          - optional: disable hiberfil.sys and reclaim disk space" -ForegroundColor Gray
 Write-Host "  [7]  Locale / Region      - restore your real language, region and timezone" -ForegroundColor Gray
@@ -232,7 +232,18 @@ if ($adwareCheck -eq 0) {
     Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-353694Enabled" 0
     Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-353696Enabled" 0
 
-    Write-Done "Widgets off, Teams chat icon off, tip notifications off"
+    # "Let's finish setting up your device" full-screen page after restart / feature update (SCOOBE)
+    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement" "ScoobeSystemSettingEnabled" 0
+    # "Suggest ways I can finish setting up my device" notification
+    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\Windows.SystemToast.Suggested" "Enabled" 0
+    # Lock screen tips / Spotlight overlays
+    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "RotatingLockScreenOverlayEnabled" 0
+    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-338387Enabled" 0
+    # Start menu "recommendations", and File Explorer OneDrive/Office ad banners
+    Set-Reg $explorer "Start_IrisRecommendations"     0
+    Set-Reg $explorer "ShowSyncProviderNotifications" 0
+
+    Write-Done "Widgets off, Teams chat icon off, tip notifications off, boot setup page off"
 }
 
 # ============================================================
