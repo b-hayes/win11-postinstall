@@ -60,17 +60,15 @@ Write-Host ""
 Write-Host "  [1]  Computer Name        - rename this machine" -ForegroundColor Gray
 Write-Host "  [2]  Telemetry & Privacy  - registry tweaks to kill data collection" -ForegroundColor Gray
 Write-Host "  [3]  Cortana & Web Search - disable Cortana, Start menu web results" -ForegroundColor Gray
-Write-Host "  [3b] Copilot & Recall     - offer to run bin/copilot-removal (Copilot, Recall, reinstall guard)" -ForegroundColor Gray
-Write-Host "  [4]  Win11 Adware Tweaks  - widgets off, Teams chat icon off, tip notifications off" -ForegroundColor Gray
-Write-Host "  [4b] Backup & Setup Nags  - kill 'finish setting up' screen and OneDrive backup prompts" -ForegroundColor Gray
-Write-Host "  [4c] Lock Screen Tips     - kill tips/ads overlay, keep Spotlight wallpaper rotation" -ForegroundColor Gray
+Write-Host "  [3b] Copilot & Recall     - bin/copilot-removal (Copilot + Recall policies, package uninstall)" -ForegroundColor Gray
+Write-Host "  [4]  System Nags & Ads    - bin/nag-removal (SCOOBE, suggestions, lock-screen tips, widgets, search highlights)" -ForegroundColor Gray
+Write-Host "  [4b] Reinstall / Nag Guard - bin/guard: daily task re-applies Copilot + nag removal after updates" -ForegroundColor Gray
 Write-Host "  [4d] Accessibility Prompts- disable Sticky/Filter/Toggle Keys shortcut popups" -ForegroundColor Gray
 Write-Host "  [4e] Windows Update       - P2P LAN-only, no auto-reboot, no silent sign-in, no app relaunch" -ForegroundColor Gray
-Write-Host "  [5]  Bloatware Removal    - uninstall built-in Microsoft/third-party apps" -ForegroundColor Gray
+Write-Host "  [5]  Bloatware Removal    - bin/debloat (uninstall built-in Microsoft/third-party apps)" -ForegroundColor Gray
 Write-Host "  [6]  Hibernation          - optional: disable hiberfil.sys and reclaim disk space" -ForegroundColor Gray
 Write-Host "  [7]  Locale / Region      - restore your real language, region and timezone" -ForegroundColor Gray
-Write-Host "  [8]  Gaming Performance   - Game Mode, MMCSS, DVR off, FSO off, power plan, HAGS" -ForegroundColor Gray
-Write-Host "  [9]  VBS / HVCI           - optional: disable for 5-10% FPS gain, fixes OC tool compat" -ForegroundColor Gray
+Write-Host "  [8]  Gaming & VBS         - bin/gaming-tweaks (Game Mode, DVR/FSO off, MMCSS, power plan, HAGS, VBS)" -ForegroundColor Gray
 Write-Host "  [10] Brave Browser        - optional install via winget + set as default browser" -ForegroundColor Gray
 Write-Host "  [10b] Edge De-Nag         - kill Edge first-run splash, recommendations, sidebar, new-tab feed" -ForegroundColor Gray
 Write-Host "  [11] Take Ownership Menu  - adds Take Ownership to right-click for files/folders/drives" -ForegroundColor Gray
@@ -132,14 +130,7 @@ if ($telCheck -eq 0 -and $diagCheck -eq 'Disabled') {
         @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\System",                                                            "UploadUserActivities",                         0),
         # App launch tracking
         @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",                                           "Start_TrackProgs",                             0),
-        # Start menu suggestions / promoted apps
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager",                                      "SubscribedContent-338388Enabled",              0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager",                                      "SubscribedContent-338389Enabled",              0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager",                                      "SystemPaneSuggestionsEnabled",                 0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager",                                      "SoftLandingEnabled",                           0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager",                                      "SubscribedContent-310093Enabled",              0),
-        # Tailored experiences
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy",                                                     "TailoredExperiencesWithDiagnosticDataEnabled", 0),
+        # (Start menu suggestions / tailored experiences now live in bin/nag-removal.ps1)
         # Error reporting
         @("HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting",                                                    "Disabled",                                     1),
         # Location
@@ -179,35 +170,27 @@ if ($cortanaCheck -eq 0 -and $webCheck -eq 1) {
         @("HKCU:\Software\Microsoft\InputPersonalization",                  "RestrictImplicitInkCollection",  1),
         @("HKCU:\Software\Microsoft\InputPersonalization\TrainedDataStore", "HarvestContacts",                0),
         # Block Bing suggestions in Explorer address bar
-        @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer",             "DisableSearchBoxSuggestions",    1),
-        # Block silent reinstallation of pushed apps
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "SilentInstalledAppsEnabled",  0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "ContentDeliveryAllowed",      0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "OemPreInstalledAppsEnabled",  0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "PreInstalledAppsEnabled",     0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "SubscribedContentEnabled",    0),
-        # Search highlights - the bouncing doodles / web content in the search box
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings",         "IsDynamicSearchBoxEnabled",   0),
-        @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search",               "EnableDynamicContentInWSB",   0)
+        @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer",             "DisableSearchBoxSuggestions",    1)
+        # (Search highlights and pushed-app content-delivery keys now live in bin/nag-removal.ps1)
     )
     Write-Step "Applying registry tweaks..."
     foreach ($t in $cortanaTweaks) { Set-Reg $t[0] $t[1] $t[2] }
 
-    Write-Done "Cortana, Start menu web search, and search highlights disabled"
+    Write-Done "Cortana and Start menu web search disabled"
 }
 
 # ============================================================
 # 3b. COPILOT & RECALL REMOVAL
 #     Delegated to bin/copilot-removal.ps1 - the single source of truth for
-#     Copilot/Recall policies, package uninstall, and the reinstall guard task.
+#     Copilot/Recall policies and package uninstall. The daily guard (section 4b)
+#     re-applies it after feature updates.
 # ============================================================
 Write-Header "Copilot & Recall Removal"
 $copilotScript = Join-Path $PSScriptRoot "..\..\bin\copilot-removal.ps1"
 if (-not (Test-Path $copilotScript)) {
-    Write-Host "  bin/copilot-removal.ps1 not found next to devtools - skipping" -ForegroundColor Yellow
+    Write-Host "  bin/copilot-removal.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
-    Write-Host "  Runs bin/copilot-removal: removes Copilot and Windows Recall, and can register" -ForegroundColor White
-    Write-Host "  a scheduled task that re-applies removal after feature updates." -ForegroundColor Gray
+    Write-Host "  Runs bin/copilot-removal: removes Copilot and Windows Recall." -ForegroundColor White
     $doCopilot = Read-Host "  Run Copilot & Recall removal now? [Y/n]"
     if ($doCopilot -notmatch '^[Nn]') {
         # This script already runs elevated, so invoke inline (no re-elevation prompt)
@@ -219,73 +202,45 @@ if (-not (Test-Path $copilotScript)) {
 }
 
 # ============================================================
-# 4. WIN11 ADWARE TWEAKS
+# 4. SYSTEM NAGS & ADS
+#    Delegated to bin/nag-removal.ps1 - the single source of truth for every
+#    nag/ad/suggestion tweak. The daily guard (section 4b) re-applies it.
 # ============================================================
-Write-Header "Windows 11 Adware Tweaks"
-$adwareCheck = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" -Name "AllowNewsAndInterests" -EA SilentlyContinue).AllowNewsAndInterests
-if ($adwareCheck -eq 0) {
-    Write-Skip "Win11 adware tweaks already applied"
+Write-Header "System Nags & Ads"
+$nagScript = Join-Path $PSScriptRoot "..\..\bin\nag-removal.ps1"
+if (-not (Test-Path $nagScript)) {
+    Write-Host "  bin/nag-removal.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
-    Write-Step "Removing adware and telemetry features..."
-    $explorer = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
-
-    # Widgets - news feed sends usage data to Microsoft
-    Set-Reg $explorer "TaskbarDa" 0
-    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" "AllowNewsAndInterests" 0
-
-    # Chat / Teams icon on taskbar - Microsoft pushing their product
-    Set-Reg $explorer "TaskbarMn" 0
-
-    # Tips and suggestions notifications - Microsoft ads in notification area
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-338393Enabled" 0
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-353694Enabled" 0
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-353696Enabled" 0
-
-    Write-Done "Widgets off, Teams chat icon off, tip notifications off"
+    Write-Host "  Runs bin/nag-removal: SCOOBE 'finish setting up' page, setup toast, Start" -ForegroundColor White
+    Write-Host "  suggestions/recommendations, OneDrive banners, lock-screen tips (Spotlight" -ForegroundColor Gray
+    Write-Host "  wallpapers kept), widgets, Teams icon, and search highlights." -ForegroundColor Gray
+    $doNags = Read-Host "  Disable system nags and ads now? [Y/n]"
+    if ($doNags -notmatch '^[Nn]') {
+        # Already elevated - invoke inline (no re-elevation prompt)
+        & $nagScript
+    } else {
+        Write-Skip "Skipping nag removal (run later with: bin/nag-removal)"
+    }
 }
 
 # ============================================================
-# 4b. BACKUP & "FINISH SETTING UP" NAGS
+# 4b. REINSTALL / NAG GUARD
+#     Delegated to bin/guard.ps1 - one scheduled task that re-runs
+#     copilot-removal and nag-removal after feature updates reset them.
 # ============================================================
-Write-Header "Backup & Setup Nags"
-$scoobe = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\UserProfileEngagement" -Name "ScoobeSystemSettingEnabled" -EA SilentlyContinue).ScoobeSystemSettingEnabled
-$syncNotify = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "ShowSyncProviderNotifications" -EA SilentlyContinue).ShowSyncProviderNotifications
-if ($scoobe -eq 0 -and $syncNotify -eq 0) {
-    Write-Skip "Backup and setup nags already disabled"
+Write-Header "Reinstall / Nag Guard"
+$guardScript = Join-Path $PSScriptRoot "..\..\bin\guard.ps1"
+if (-not (Test-Path $guardScript)) {
+    Write-Host "  bin/guard.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
-    Write-Step "Disabling 'Finish setting up your device' (SCOOBE) screen..."
-    # The welcome/finish-setup experience that nags after feature updates
-    Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\UserProfileEngagement" "ScoobeSystemSettingEnabled" 0
-    # Post-update OOBE privacy/setup pages
-    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE" "DisablePrivacyExperience" 1
-    # "Suggest ways I can finish setting up my device" notification toast
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\Windows.SystemToast.Suggested" "Enabled" 0
-
-    Write-Step "Disabling OneDrive / 'back up your files' prompts..."
-    # File Explorer sync-provider ads ("back up to OneDrive" banners)
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "ShowSyncProviderNotifications" 0
-    # Settings app account/backup suggestion banners
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-338380Enabled" 0
-
-    Write-Step "Disabling Start menu recommendations..."
-    # "Recommended" section pushing recently-added apps and promoted content
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "Start_IrisRecommendations" 0
-
-    Write-Done "Finish-setup screen, setup toast, Start recommendations, and OneDrive prompts disabled"
-}
-
-# ============================================================
-# 4c. LOCK SCREEN TIPS (keeps Spotlight wallpaper rotation)
-# ============================================================
-Write-Header "Lock Screen Tips"
-$lsOverlay = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" -Name "RotatingLockScreenOverlayEnabled" -EA SilentlyContinue).RotatingLockScreenOverlayEnabled
-if ($lsOverlay -eq 0) {
-    Write-Skip "Lock screen tips/ads already disabled"
-} else {
-    Write-Step "Disabling lock screen 'fun facts, tips & tricks' overlay..."
-    # Kills the ad/tips overlay only - Spotlight wallpaper rotation is left on
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "RotatingLockScreenOverlayEnabled" 0
-    Write-Done "Lock screen tips/ads off (Spotlight wallpapers still rotate)"
+    Write-Host "  Feature updates re-add Copilot and reset nag settings. A single scheduled" -ForegroundColor White
+    Write-Host "  task can re-run Copilot and nag removal at logon and daily to keep them gone." -ForegroundColor Gray
+    $doGuard = Read-Host "  Register the guard task? [Y/n]"
+    if ($doGuard -notmatch '^[Nn]') {
+        & $guardScript -Yes
+    } else {
+        Write-Skip "Skipping guard (register later with: bin/guard)"
+    }
 }
 
 # ============================================================
@@ -333,79 +288,20 @@ if ($doMode -eq 1 -and $noReboot -eq 1) {
 # ============================================================
 # 5. BLOATWARE REMOVAL
 # ============================================================
-Write-Header "Removing Built-in Bloatware"
-$bloatCanary = @('Microsoft.BingNews','Microsoft.MicrosoftSolitaireCollection','Clipchamp.Clipchamp','Microsoft.Copilot') |
-    Where-Object { Get-AppxPackage -Name $_ -AllUsers -EA SilentlyContinue }
-if (-not $bloatCanary) {
-    Write-Skip "Bloatware already removed"
+#    Delegated to bin/debloat.ps1 - the single source of truth for the app list.
+Write-Header "Bloatware Removal"
+$debloatScript = Join-Path $PSScriptRoot "..\..\bin\debloat.ps1"
+if (-not (Test-Path $debloatScript)) {
+    Write-Host "  bin/debloat.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
-    $bloatware = @(
-        # Carried over from Win10
-        "Microsoft.3DBuilder"
-        "Microsoft.BingFinance"
-        "Microsoft.BingNews"
-        "Microsoft.BingSports"
-        "Microsoft.BingWeather"
-        "Microsoft.GetHelp"
-        "Microsoft.Getstarted"
-        "Microsoft.Messaging"
-        "Microsoft.Microsoft3DViewer"
-        "Microsoft.MicrosoftOfficeHub"
-        "Microsoft.MicrosoftSolitaireCollection"
-        "Microsoft.MixedReality.Portal"
-        "Microsoft.NetworkSpeedTest"
-        "Microsoft.News"
-        "Microsoft.Office.Lens"
-        "Microsoft.Office.OneNote"
-        "Microsoft.Office.Sway"
-        "Microsoft.OneConnect"
-        "Microsoft.People"
-        "Microsoft.Print3D"
-        "Microsoft.SkypeApp"
-        "Microsoft.Todos"
-        "Microsoft.WindowsAlarms"
-        "Microsoft.WindowsFeedbackHub"
-        "Microsoft.WindowsMaps"
-        "Microsoft.WindowsSoundRecorder"
-        "Microsoft.ZuneMusic"
-        "Microsoft.ZuneVideo"
-        "MicrosoftTeams"
-        "Microsoft.PowerAutomateDesktop"
-        "Clipchamp.Clipchamp"
-        "king.com.BubbleWitch3Saga"
-        "king.com.CandyCrushSaga"
-        "king.com.CandyCrushSodaSaga"
-        "Disney.37853D22215E2"
-        "SpotifyAB.SpotifyMusic"
-        "TikTok"
-        "Amazon.com.Amazon"
-        # Win11 additions
-        "MicrosoftCorporationII.MicrosoftTeams"   # new Teams app (Win11 24H2)
-        "Microsoft.OutlookForWindows"             # new Outlook
-        "Microsoft.Windows.DevHome"               # Dev Home
-        "Microsoft.BingSearch"                    # Bing search integration
-        "Microsoft.Windows.Ai.Copilot.Provider"   # Copilot provider
-        "Microsoft.549981C3F5F10"                 # Cortana app package
-        "Microsoft.MicrosoftJournal"
-        "Microsoft.Whiteboard"
-        "Microsoft.Copilot"
-    )
-    $provisioned = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
-    foreach ($app in $bloatware) {
-        $pkg = Get-AppxPackage -Name $app -AllUsers -ErrorAction SilentlyContinue
-        if ($pkg) {
-            Write-Step "Removing $app"
-            $pkg | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
-        }
-        $prov = $provisioned | Where-Object { $_.DisplayName -eq $app }
-        if ($prov) {
-            # COMException from DISM bypasses -ErrorAction; suppress via $ErrorActionPreference
-            $eap = $ErrorActionPreference; $ErrorActionPreference = 'SilentlyContinue'
-            Remove-AppxProvisionedPackage -Online -PackageName $prov.PackageName | Out-Null
-            $ErrorActionPreference = $eap
-        }
+    Write-Host "  Runs bin/debloat: uninstalls built-in and pushed Microsoft/third-party apps." -ForegroundColor White
+    $doDebloat = Read-Host "  Remove bloatware now? [Y/n]"
+    if ($doDebloat -notmatch '^[Nn]') {
+        # Already elevated - invoke inline (no re-elevation prompt)
+        & $debloatScript -Yes
+    } else {
+        Write-Skip "Skipping bloatware removal (run later with: bin/debloat)"
     }
-    Write-Done "Bloatware removal complete"
 }
 
 # ============================================================
@@ -556,113 +452,24 @@ if ($currentCulture -ne 'en-001') {
 }
 
 # ============================================================
-# 8. GAMING PERFORMANCE
+# 8. GAMING & VBS
+#    Delegated to bin/gaming-tweaks.ps1 - gaming performance tweaks and the
+#    optional VBS/HVCI disable, with their own HAGS/VBS prompts.
 # ============================================================
-Write-Header "Gaming Performance"
-$gameDvr = (Get-ItemProperty "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -EA SilentlyContinue).GameDVR_Enabled
-if ($gameDvr -eq 0) {
-    Write-Skip "Gaming tweaks already applied"
+Write-Header "Gaming & VBS"
+$gamingScript = Join-Path $PSScriptRoot "..\..\bin\gaming-tweaks.ps1"
+if (-not (Test-Path $gamingScript)) {
+    Write-Host "  bin/gaming-tweaks.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
-    Write-Host "  Will apply:" -ForegroundColor White
-    Write-Host "    - Game Mode on" -ForegroundColor Gray
-    Write-Host "    - Game DVR / background recording off" -ForegroundColor Gray
-    Write-Host "    - Fullscreen optimizations off (globally)" -ForegroundColor Gray
-    Write-Host "    - MMCSS: GPU Priority 8, CPU Priority 6, High scheduling category" -ForegroundColor Gray
-    Write-Host "    - CPU scheduler: foreground-boosted quanta (Win32PrioritySeparation 26)" -ForegroundColor Gray
-    Write-Host "    - Power plan: High Performance" -ForegroundColor Gray
-    Write-Host "    - HAGS: will ask separately" -ForegroundColor Gray
-    $doGaming = Read-Host "  Apply gaming performance tweaks? [Y/n]"
+    Write-Host "  Runs bin/gaming-tweaks: Game Mode, DVR/FSO off, MMCSS, power plan, HAGS," -ForegroundColor White
+    Write-Host "  and an optional VBS/HVCI disable for a 5-10% FPS gain." -ForegroundColor Gray
+    $doGaming = Read-Host "  Run gaming & VBS tweaks now? [Y/n]"
     if ($doGaming -notmatch '^[Nn]') {
-        Write-Step "Enabling Game Mode..."
-        Set-Reg "HKCU:\Software\Microsoft\GameBar" "AutoGameModeEnabled" 1
-        Set-Reg "HKCU:\Software\Microsoft\GameBar" "AllowAutoGameMode"   1
-
-        Write-Step "Disabling Game DVR background recording..."
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_Enabled" 0
-        Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR" 0
-        Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR" "AppCaptureEnabled" 0
-
-        Write-Step "Disabling fullscreen optimizations globally..."
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_FSEBehaviorMode"               2
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_HonorUserFSEBehaviorMode"      1
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_FSEBehavior"                   2
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_DXGIHonorFSEWindowsCompatible" 1
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_EFSEBehaviorMode"              2
-
-        Write-Step "Applying MMCSS game scheduling priority..."
-        $mmcss      = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile"
-        $mmcssGames = "$mmcss\Tasks\Games"
-        Set-ItemProperty -Path $mmcss -Name "NetworkThrottlingIndex" -Value 0xffffffff -Type DWord -Force
-        Set-Reg    $mmcss "SystemResponsiveness" 10
-        if (-not (Test-Path $mmcssGames)) { New-Item -Path $mmcssGames -Force | Out-Null }
-        Set-Reg    $mmcssGames "GPU Priority" 8
-        Set-Reg    $mmcssGames "Priority"     6
-        Set-RegStr $mmcssGames "Scheduling Category" "High"
-        Set-RegStr $mmcssGames "SFIO Priority"       "High"
-
-        Write-Step "Setting CPU scheduler to foreground-boosted quanta..."
-        Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" "Win32PrioritySeparation" 26
-
-        Write-Step "Setting High Performance power plan..."
-        powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-
-        Write-Host ""
-        Write-Host "  Hardware-Accelerated GPU Scheduling (HAGS):" -ForegroundColor White
-        $hagsVal   = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -EA SilentlyContinue).HwSchMode
-        $hagsState = if ($hagsVal -eq 2) { "ENABLED" } elseif ($hagsVal -eq 1) { "DISABLED" } else { "not explicitly set" }
-        Write-Host "  Current state: $hagsState" -ForegroundColor $(if ($hagsVal -eq 2) { 'Green' } elseif ($hagsVal -eq 1) { 'Yellow' } else { 'DarkGray' })
-        Write-Host "  - RTX 40/50 series : turn ON - DLSS frame generation is a hard requirement" -ForegroundColor Gray
-        Write-Host "  - RTX 20/30 series : turn OFF - DLSS frame gen unavailable, HAGS costs ~1GB VRAM" -ForegroundColor Gray
-        Write-Host "  - AMD RX 9000      : ON recommended (general best practice on RDNA 4)" -ForegroundColor Gray
-        Write-Host "  - AMD RX 6000/7000 : OFF - FSR 3/4 and AFMF don't require it, saves VRAM" -ForegroundColor Gray
-        Write-Host "  Note: DLSS/FSR upscaling works on all supported cards regardless of HAGS" -ForegroundColor DarkGray
-        $hags = Read-Host "  Enable HAGS? [Y/n]"
-        if ($hags -notmatch '^[Nn]') {
-            Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" "HwSchMode" 2
-            Write-Done "HAGS enabled"
-        } else {
-            Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" "HwSchMode" 1
-            Write-Done "HAGS disabled"
-        }
-        $restartReasons += "HAGS setting changed - takes effect after restart"
-
-        Write-Done "Gaming performance tweaks applied"
+        # Already elevated - invoke inline (no re-elevation prompt)
+        & $gamingScript
+        $restartReasons += "Gaming / VBS tweaks - HAGS and VBS changes take effect after restart"
     } else {
-        Write-Skip "Skipping gaming tweaks"
-    }
-}
-
-# ============================================================
-# 9. VBS / HVCI
-# ============================================================
-Write-Header "Virtualization Based Security (VBS / HVCI)"
-$vbsVal  = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard" -Name "EnableVirtualizationBasedSecurity" -EA SilentlyContinue).EnableVirtualizationBasedSecurity
-$hvciVal = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Name "Enabled" -EA SilentlyContinue).Enabled
-if ($vbsVal -eq 0 -and $hvciVal -eq 0) {
-    Write-Skip "VBS/HVCI already disabled"
-} else {
-    Write-Host "  VBS adds a hypervisor layer for security but costs 5-10% average FPS," -ForegroundColor White
-    Write-Host "  up to 15% on 1% lows in CPU-bound games. It also blocks kernel drivers" -ForegroundColor White
-    Write-Host "  used by overclocking tools like MSI Afterburner, HWiNFO64, and XTU." -ForegroundColor White
-    Write-Host "  On a home gaming PC the security trade-off is generally not worth it." -ForegroundColor DarkGray
-    $vbsState = if ($vbsVal -eq $null) { "unknown (check Windows Security > Device Security)" } else { "ENABLED" }
-    Write-Host "  Current state: $vbsState" -ForegroundColor Yellow
-    $disableVbs = Read-Host "  Disable VBS/HVCI? [Y/n]"
-    if ($disableVbs -notmatch '^[Nn]') {
-        Write-Step "Disabling VBS / HVCI..."
-        $dg   = "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard"
-        $hvci = "$dg\Scenarios\HypervisorEnforcedCodeIntegrity"
-        $ks   = "$dg\Scenarios\KernelShadowStacks"
-        Set-Reg $dg   "EnableVirtualizationBasedSecurity"  0
-        Set-Reg $dg   "RequirePlatformSecurityFeatures"    0
-        Set-Reg $hvci "Enabled"                            0
-        Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"            "LsaCfgFlags" 0
-        Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard" "LsaCfgFlags" 0
-        if (Test-Path $ks) { Set-Reg $ks "Enabled" 0 }
-        Write-Done "VBS/HVCI disabled"
-        $restartReasons += "VBS / Memory Integrity disabled - takes effect after restart"
-    } else {
-        Write-Skip "VBS/HVCI left enabled"
+        Write-Skip "Skipping gaming & VBS tweaks (run later with: bin/gaming-tweaks)"
     }
 }
 

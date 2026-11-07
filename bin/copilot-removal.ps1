@@ -1,25 +1,19 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Remove Microsoft Copilot and Windows Recall, and stop Windows re-installing them.
+    Remove Microsoft Copilot and Windows Recall.
 
 .DESCRIPTION
     Applies the current (2026) supported policies to disable and remove Copilot, disables
-    Windows Recall (periodic screen snapshots), uninstalls the Copilot Appx packages, and
-    optionally registers a scheduled task that re-applies the removal after feature updates
-    (Windows re-adds Copilot on major updates).
+    Windows Recall (periodic screen snapshots), and uninstalls the Copilot Appx packages.
+
+    Windows re-adds Copilot on major feature updates - the shared guard (bin/guard.ps1)
+    re-runs this script to keep it gone.
 
     Safe to re-run - every step is idempotent and skips work already done.
 
 .PARAMETER Yes
-    Accept all prompts (non-interactive). Registers the scheduled recheck task without asking.
-
-.PARAMETER Unregister
-    Remove the scheduled recheck task and exit. Does not undo the policies.
-
-.PARAMETER Hidden
-    Re-register the scheduled recheck task to run silently (no window) and exit.
-    Keeps the guard running but stops the daily window appearing.
+    Accept all prompts (non-interactive). Used by the scheduled guard.
 
 .PARAMETER Help
     Show this usage and exit.
@@ -28,43 +22,20 @@
     .\copilot-removal.ps1
 .EXAMPLE
     .\copilot-removal.ps1 -Yes
-.EXAMPLE
-    .\copilot-removal.ps1 -Unregister
 #>
 param(
     [switch]$Yes,
-    [switch]$Unregister,
-    [switch]$Hidden,
     [switch]$Help
 )
 
 $ErrorActionPreference = 'Continue'
 
-$TaskName    = 'DevtoolsCopilotRemoval'
-$InstallDir  = "$env:ProgramData\Win11PostInstall"
-$InstalledScript = Join-Path $InstallDir 'copilot-removal.ps1'
-
-# Copilot packages to remove (source of truth, reused by the scheduled task)
+# Copilot packages to remove
 $CopilotPackages = @(
     'Microsoft.Copilot'
     'Microsoft.Windows.Ai.Copilot.Provider'
     'Microsoft.BingSearch'
 )
-
-function Show-Usage {
-    Write-Host ""
-    Write-Host "  copilot-removal - remove Copilot and Recall, block reinstall" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "  Usage: copilot-removal [-Yes] [-Unregister] [-Hidden] [-Help]" -ForegroundColor White
-    Write-Host ""
-    Write-Host "    -Yes         Accept all prompts (non-interactive)" -ForegroundColor Gray
-    Write-Host "    -Unregister  Remove the scheduled recheck task and exit" -ForegroundColor Gray
-    Write-Host "    -Hidden      Re-register the recheck task to run silently and exit" -ForegroundColor Gray
-    Write-Host "    -Help        Show this help and exit" -ForegroundColor Gray
-    Write-Host ""
-}
-
-if ($Help) { Show-Usage; return }
 
 function Write-Header { param([string]$Text)
     Write-Host ""
@@ -94,77 +65,30 @@ function Set-Reg {
     }
 }
 
-function Confirm-Default-Yes {
-    param([string]$Prompt)
-    if ($Yes) { return $true }
-    $ans = Read-Host "  $Prompt [Y/n]"
-    return ($ans -notmatch '^[Nn]')
-}
-
-function Register-RecheckTask {
-    param([bool]$RunHidden)
-    if (-not (Test-Path $InstallDir)) { New-Item -Path $InstallDir -ItemType Directory -Force | Out-Null }
-    # Skip the copy when already running from the installed location (hidden re-register)
-    if ($PSCommandPath -ne $InstalledScript) { Copy-Item -Path $PSCommandPath -Destination $InstalledScript -Force }
-
-    if ($RunHidden) {
-        # Hidden: no window (-WindowStyle Hidden, no -NoExit). S4U runs in the user context
-        # without an interactive desktop session, so nothing flashes on screen.
-        $arg       = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstalledScript`" -Yes"
-        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Highest
-    } else {
-        # Visible: -NoExit keeps the elevated window open so a success/failure is always seen
-        $arg       = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$InstalledScript`" -Yes"
-        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
-    }
-    $action   = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
-    $triggers = @((New-ScheduledTaskTrigger -AtLogOn), (New-ScheduledTaskTrigger -Daily -At 9am))
-    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Force | Out-Null
+if ($Help) {
+    Write-Host ""
+    Write-Host "  copilot-removal - remove Copilot and Recall" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Usage: copilot-removal [-Yes] [-Help]" -ForegroundColor White
+    Write-Host ""
+    Write-Host "    -Yes   Accept all prompts (non-interactive)" -ForegroundColor Gray
+    Write-Host "    -Help  Show this help and exit" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Re-apply automatically after feature updates with: guard" -ForegroundColor DarkGray
+    Write-Host ""
+    return
 }
 
 # Self-elevate: relaunch as admin if we are not already (git bash launches without elevation)
 if (-not (Test-Admin)) {
     Write-Warn "Administrator rights required - relaunching elevated..."
-    # -NoExit keeps the elevated window open so the user can read the output (never hide runs)
     $argList = @('-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-File', "`"$PSCommandPath`"")
-    if ($Yes)        { $argList += '-Yes' }
-    if ($Unregister) { $argList += '-Unregister' }
-    if ($Hidden)     { $argList += '-Hidden' }
+    if ($Yes) { $argList += '-Yes' }
     try {
         Start-Process powershell.exe -Verb RunAs -ArgumentList $argList
     } catch {
         Write-Host "  Elevation was cancelled or failed. Run this from an elevated shell." -ForegroundColor Red
     }
-    return
-}
-
-# ============================================================
-# UNREGISTER MODE
-# ============================================================
-if ($Unregister) {
-    Write-Header "Remove Scheduled Recheck Task"
-    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-        Write-Done "Scheduled task '$TaskName' removed"
-    } else {
-        Write-Skip "No scheduled task '$TaskName' found"
-    }
-    return
-}
-
-# ============================================================
-# HIDE MODE (re-register the recheck task to run silently)
-# ============================================================
-if ($Hidden) {
-    Write-Header "Hide Scheduled Recheck Task"
-    if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) {
-        Write-Skip "No scheduled task '$TaskName' found - run copilot-removal first to create it"
-        return
-    }
-    Write-Step "Re-registering '$TaskName' to run silently (no window)..."
-    Register-RecheckTask -RunHidden $true
-    Write-Done "Recheck task now runs hidden. Make it visible again with: copilot-removal -Unregister, then re-run copilot-removal"
     return
 }
 
@@ -250,56 +174,9 @@ foreach ($app in $CopilotPackages) {
 }
 if ($removedAny) { Write-Done "Copilot packages removed" } else { Write-Skip "No Copilot packages installed" }
 
-# ============================================================
-# 4. BOOT NAGS & ADS (reset by feature updates, so re-applied here)
-# ============================================================
-Write-Header "Boot Nags & Ads"
-$CDM = "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
-$ADV = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
-$nagTweaks = @(
-    # "Let's finish setting up your device" full-screen page after restart / feature update (SCOOBE)
-    @("HKCU:\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement", "ScoobeSystemSettingEnabled", 0),
-    # "Suggest ways I can finish setting up my device" notification
-    @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\Windows.SystemToast.Suggested", "Enabled", 0),
-    # Lock screen tips overlay (Spotlight wallpaper rotation intentionally left on)
-    @($CDM, "RotatingLockScreenOverlayEnabled", 0),
-    # Start menu "recommendations", and File Explorer OneDrive/Office ad banners
-    @($ADV, "Start_IrisRecommendations",     0),
-    @($ADV, "ShowSyncProviderNotifications", 0)
-)
-Write-Step "Disabling boot nags and Start/lock-screen ads..."
-foreach ($t in $nagTweaks) { Set-Reg $t[0] $t[1] $t[2] }
-Write-Done "Boot nags and ads disabled"
-
-# ============================================================
-# 5. SCHEDULED RECHECK (reinstall guard)
-# ============================================================
-Write-Header "Reinstall Guard (Scheduled Recheck)"
-if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-    Write-Skip "Scheduled recheck task '$TaskName' already registered"
-} else {
-    Write-Host "  Windows re-adds Copilot on major feature updates. A scheduled task can" -ForegroundColor Cyan
-    Write-Host "  re-run this removal at logon and daily to keep it gone." -ForegroundColor Cyan
-    Write-Host "  It runs in a VISIBLE window that stays open so you can read the result." -ForegroundColor Cyan
-    if (Confirm-Default-Yes "Register the scheduled recheck task?") {
-        Write-Step "Installing script to $InstallDir..."
-        Write-Step "Registering scheduled task '$TaskName' (visible window)..."
-        Register-RecheckTask -RunHidden $false
-        Write-Done "Scheduled recheck registered (remove later with: copilot-removal -Unregister)"
-    } else {
-        Write-Skip "Skipping scheduled recheck"
-    }
-}
-
 Write-Header "Done"
 Write-Host "  Copilot and Recall removed. A restart is recommended for policy changes to" -ForegroundColor Green
 Write-Host "  fully take effect." -ForegroundColor Green
 Write-Host ""
-if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-    Write-Host "  The recheck task opens this window every day. To keep it running but hide it" -ForegroundColor Cyan
-    Write-Host "  so you never see it again, run:" -ForegroundColor Cyan
-    Write-Host "      copilot-removal -Hidden" -ForegroundColor White
-    Write-Host ""
-}
-Write-Host "  Finished - you can close this window." -ForegroundColor Cyan
+Write-Host "  To keep this applied after feature updates, register the guard: guard" -ForegroundColor DarkGray
 Write-Host ""

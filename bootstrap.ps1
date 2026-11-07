@@ -3,8 +3,8 @@
     Bootstrap for win11-postinstall. Run via:
         irm https://raw.githubusercontent.com/b-hayes/win11-postinstall/main/bootstrap.ps1 | iex
 
-    Self-elevates, downloads Win11PostInstall.ps1 and its bin/copilot-removal.ps1
-    dependency to a local folder (preserving the layout the script expects), then runs it.
+    Self-elevates, downloads Win11PostInstall.ps1 and its bin/ module dependencies
+    to a local folder (preserving the layout the script expects), then runs it.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -31,7 +31,11 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction S
 $dir = Join-Path $env:TEMP 'win11-postinstall'
 $files = @(
     'cli/setup/Win11PostInstall.ps1',
-    'bin/copilot-removal.ps1'
+    'bin/copilot-removal.ps1',
+    'bin/nag-removal.ps1',
+    'bin/gaming-tweaks.ps1',
+    'bin/debloat.ps1',
+    'bin/guard.ps1'
 )
 
 foreach ($f in $files) {
