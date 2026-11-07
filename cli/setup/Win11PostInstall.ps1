@@ -3,7 +3,11 @@
 .SYNOPSIS
     Windows 11 post-install setup script.
     Run once after a clean Windows install.
+.PARAMETER RepoRaw
+    Raw base URL the post-reboot resume pulls from (passed by bootstrap.ps1).
+    Defaults to main; carries the branch through when testing.
 #>
+param([string]$RepoRaw)
 
 $ErrorActionPreference = 'Continue'
 
@@ -66,8 +70,9 @@ function Skip-Flaky {
     Write-Skip "Deferred until after Windows Updates + reboot (menu re-opens to finish)"
 }
 
-# URL the post-reboot RunOnce re-launch pulls from (same as bootstrap.ps1)
-$BootstrapUrl = 'https://raw.githubusercontent.com/b-hayes/win11-postinstall/main/bootstrap.ps1'
+# Base URL the post-reboot RunOnce re-launch pulls from (from bootstrap.ps1 via
+# -RepoRaw; defaults to main so a direct/clone run still resumes correctly)
+if (-not $RepoRaw) { $RepoRaw = 'https://raw.githubusercontent.com/b-hayes/win11-postinstall/main' }
 
 $restartReasons = @()
 
@@ -830,7 +835,7 @@ if ($preUpdatePass) {
     Write-Step "Scheduling this menu to re-open after your next sign-in..."
     $ro = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
     if (-not (Test-Path $ro)) { New-Item -Path $ro -Force | Out-Null }
-    $resumeCmd = "powershell -NoProfile -ExecutionPolicy Bypass -Command `"irm $BootstrapUrl | iex`""
+    $resumeCmd = "powershell -NoProfile -ExecutionPolicy Bypass -Command `"`$RepoRaw='$RepoRaw'; irm `$RepoRaw/bootstrap.ps1 | iex`""
     Set-ItemProperty $ro -Name "Win11PostInstallResume" -Value $resumeCmd -Force
     Write-Done "Menu will re-open once after reboot (needs internet and a UAC prompt at that sign-in)"
     Write-Host ""
