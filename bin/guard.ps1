@@ -6,7 +6,7 @@
 .DESCRIPTION
     Windows re-adds Copilot and resets nag/ad settings on major feature updates.
     This registers ONE scheduled task that re-runs the feature-update-sensitive
-    modules (copilot-removal.ps1 and nag-removal.ps1) at logon and daily.
+    modules (copilot-removal.ps1 and nag-removal.ps1) daily.
 
     The task runs a VISIBLE window by default so you can see the result. Use
     -Hidden once you trust it to run silently.
@@ -37,6 +37,7 @@ param(
 $ErrorActionPreference = 'Continue'
 
 $TaskName     = 'Win11PostInstallGuard'
+$LegacyTasks  = @('DevtoolsCopilotRemoval')   # task names from older versions, removed on register
 $InstallDir   = "$env:ProgramData\Win11PostInstall"
 $InstalledGuard = Join-Path $InstallDir 'guard.ps1'
 # Feature-update-sensitive modules the guard re-applies (order matters: policies first)
@@ -88,9 +89,17 @@ function Register-GuardTask {
         $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
     }
     $action   = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
-    $triggers = @((New-ScheduledTaskTrigger -AtLogOn), (New-ScheduledTaskTrigger -Daily -At 9am))
+    # Daily only (no AtLogOn) so there's no window at every login; StartWhenAvailable
+    # catches up shortly after boot if the daily slot was missed.
+    $triggers = @((New-ScheduledTaskTrigger -Daily -At 9am))
     $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Force | Out-Null
+    # Remove tasks left by older versions so they don't double up
+    foreach ($legacy in $LegacyTasks) {
+        if (Get-ScheduledTask -TaskName $legacy -ErrorAction SilentlyContinue) {
+            Unregister-ScheduledTask -TaskName $legacy -Confirm:$false
+        }
+    }
 }
 
 if ($Help) {
@@ -175,13 +184,20 @@ if ($Hidden) {
 # REGISTER MODE (default)
 # ============================================================
 Write-Header "Reinstall / Nag Guard"
+# Always clear any legacy-named tasks, even if the current guard is already registered
+foreach ($legacy in $LegacyTasks) {
+    if (Get-ScheduledTask -TaskName $legacy -ErrorAction SilentlyContinue) {
+        Write-Step "Removing leftover task from an older version: $legacy"
+        Unregister-ScheduledTask -TaskName $legacy -Confirm:$false
+    }
+}
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Write-Skip "Guard task '$TaskName' already registered"
     Write-Host "  Make it silent with: guard -Hidden   Remove it with: guard -Unregister" -ForegroundColor DarkGray
 } else {
     Write-Host "  Windows re-adds Copilot and resets nag/ad settings on major feature" -ForegroundColor Cyan
-    Write-Host "  updates. A scheduled task can re-run copilot-removal and nag-removal at" -ForegroundColor Cyan
-    Write-Host "  logon and daily to keep them gone." -ForegroundColor Cyan
+    Write-Host "  updates. A scheduled task re-runs copilot-removal and nag-removal daily" -ForegroundColor Cyan
+    Write-Host "  to keep them gone." -ForegroundColor Cyan
     Write-Host "  It runs in a VISIBLE window at first so you can read the result." -ForegroundColor Cyan
     if (Confirm-Default-Yes "Register the guard task?") {
         Write-Step "Installing modules to $InstallDir and registering '$TaskName'..."

@@ -64,17 +64,182 @@ function Test-UpdateActive {
     }
     return $false
 }
-function Skip-Flaky {
-    param([string]$Name)
-    Write-Header $Name
-    Write-Skip "Deferred until after Windows Updates + reboot (menu re-opens to finish)"
+# The flaky steps deferred by the pre-update pass. Called at the end of a full run,
+# and on their own by the post-reboot resume. Nothing else runs in resume mode.
+function Invoke-DeferredSteps {
+    # --- Bloatware (bin/debloat.ps1) ---
+    Write-Header "Bloatware Removal"
+    $debloatScript = Join-Path $PSScriptRoot "..\..\bin\debloat.ps1"
+    if (-not (Test-Path $debloatScript)) {
+        Write-Host "  bin/debloat.ps1 not found - skipping" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Runs bin/debloat: uninstalls built-in and pushed Microsoft/third-party apps." -ForegroundColor White
+        $doDebloat = Read-Host "  Remove bloatware now? [Y/n]"
+        if ($doDebloat -notmatch '^[Nn]') {
+            & $debloatScript -Yes
+        } else {
+            Write-Skip "Skipping bloatware removal (run later with: bin/debloat)"
+        }
+    }
+
+    # --- Brave Browser ---
+    Write-Header "Brave Browser"
+    $braveExe = "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"
+    if (Test-Path $braveExe) {
+        Write-Skip "Brave already installed"
+    } else {
+        $installBrave = Read-Host "  Install Brave Browser? [Y/n]"
+        if ($installBrave -notmatch '^[Nn]') {
+            if (Get-Command winget -ErrorAction SilentlyContinue) {
+                Write-Step "Checking internet connection..."
+                if (-not (Test-Internet)) {
+                    Write-Host "  No internet detected - connect first, then re-run this step." -ForegroundColor Yellow
+                    Write-Host "  Manual install: winget install --id Brave.Brave" -ForegroundColor DarkGray
+                } else {
+                    Write-Step "Resetting winget sources..."
+                    winget source reset --force 2>&1 | Out-Null
+                    Write-Step "Installing Brave via winget..."
+                    winget install --id Brave.Brave -e --source winget `
+                          --accept-package-agreements --accept-source-agreements
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Done "Brave installed"
+                    } else {
+                        Write-Host "  winget install failed (exit $LASTEXITCODE) - download from brave.com" -ForegroundColor Yellow
+                    }
+
+                    $setDefault = Read-Host "  Set Brave as default browser? [Y/n]"
+                    if ($setDefault -notmatch '^[Nn]') {
+                        Write-Step "Suppressing Edge default-browser nag (policy key)..."
+                        Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "DefaultBrowserSettingEnabled" 0
+
+                        Write-Step "Bootstrapping NuGet and installing PS-SFTA..."
+                        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser -ErrorAction SilentlyContinue | Out-Null
+                        if (-not (Get-PSRepository -Name PSGallery -EA SilentlyContinue)) {
+                            Register-PSRepository -Default -ErrorAction SilentlyContinue | Out-Null
+                        }
+                        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+                        Install-Module -Name PS-SFTA -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction SilentlyContinue
+
+                        if (Get-Module -ListAvailable -Name PS-SFTA) {
+                            Import-Module PS-SFTA
+                            Write-Step "Writing UserChoice associations for Brave..."
+                            Set-PTA -ProgId BraveHTML -Protocol http
+                            Set-PTA -ProgId BraveHTML -Protocol https
+                            Set-FTA -ProgId BraveHTML -Extension .html
+                            Set-FTA -ProgId BraveHTML -Extension .htm
+                            Write-Done "Brave is now the default browser - Edge nag suppressed"
+                        } else {
+                            Write-Host "  PS-SFTA could not be installed." -ForegroundColor Yellow
+                            Write-Host "  Opening Default Apps - select Brave Browser and click Set default." -ForegroundColor White
+                            Start-Process "ms-settings:defaultapps"
+                        }
+                    } else {
+                        Write-Skip "Skipping default browser change"
+                    }
+                }
+            } else {
+                Write-Host "  winget not found. Download Brave manually from brave.com" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Skip "Skipping Brave"
+        }
+    }
+
+    # --- Chris Titus Tech WinUtil ---
+    Write-Header "Chris Titus Tech WinUtil"
+    Write-Host "  WinUtil is an interactive GUI for tweaks, debloating, and software install." -ForegroundColor White
+    Write-Host "  It opens in its own window - close it when done and come back here." -ForegroundColor DarkGray
+    $runCTT = Read-Host "  Launch WinUtil now? [y/N]"
+    if ($runCTT -match '^[Yy]') {
+        Write-Step "Launching WinUtil (requires internet)..."
+        Start-Process powershell.exe `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"irm christitus.com/win | iex`"" `
+            -Verb RunAs -Wait
+        Write-Done "WinUtil closed"
+    } else {
+        Write-Skip "Skipping WinUtil"
+        Write-Host "  Run it later with:  irm christitus.com/win | iex" -ForegroundColor DarkGray
+    }
+
+    # --- Extra UI & System Tweaks ---
+    Write-Header "Extra UI & System Tweaks"
+    Write-Host "  Will apply:" -ForegroundColor White
+    Write-Host "    - Taskbar search box hidden" -ForegroundColor Gray
+    Write-Host "    - 'End Task' added to taskbar right-click menu" -ForegroundColor Gray
+    Write-Host "    - Start menu pins emptied" -ForegroundColor Gray
+    Write-Host "    - Window transparency on" -ForegroundColor Gray
+    Write-Host "    - Edge desktop shortcut removed" -ForegroundColor Gray
+    Write-Host "    - Device metadata download and driver co-installers blocked" -ForegroundColor Gray
+    Write-Host "    - Internet Explorer feature removed" -ForegroundColor Gray
+    $searchBox = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "SearchboxTaskbarMode" -EA SilentlyContinue).SearchboxTaskbarMode
+    if ($searchBox -eq 0) {
+        Write-Skip "Extra UI & system tweaks already applied"
+    } else {
+        $doExtra = Read-Host "  Apply these tweaks? [y/N]"
+        if ($doExtra -match '^[Yy]') {
+            $adv = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+
+            Write-Step "Hiding taskbar search box..."
+            Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 0
+
+            Write-Step "Adding 'End Task' to taskbar right-click menu..."
+            Set-Reg "$adv\TaskbarDeveloperSettings" "TaskbarEndTask" 1
+
+            Write-Step "Emptying Start menu pins..."
+            Set-RegStr "HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start" "ConfigureStartPins" '{"pinnedList":[]}'
+
+            Write-Step "Enabling window transparency..."
+            Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "EnableTransparency" 1
+
+            Write-Step "Removing Edge desktop shortcut..."
+            Remove-Item "$env:PUBLIC\Desktop\Microsoft Edge.lnk", "$env:USERPROFILE\Desktop\Microsoft Edge.lnk" -Force -EA SilentlyContinue
+
+            Write-Step "Blocking device metadata download and driver co-installers..."
+            Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" 1
+            Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Installer" "DisableCoInstallers" 1
+
+            Write-Step "Removing Internet Explorer feature..."
+            Get-WindowsCapability -Online -EA SilentlyContinue |
+                Where-Object { $_.Name -like 'Browser.InternetExplorer*' -and $_.State -eq 'Installed' } |
+                ForEach-Object { Remove-WindowsCapability -Online -Name $_.Name -EA SilentlyContinue | Out-Null }
+
+            Write-Done "Extra UI & system tweaks applied"
+            $script:restartReasons += "Extra UI & system tweaks - some take effect after restart"
+        } else {
+            Write-Skip "Skipping extra UI & system tweaks"
+        }
+    }
 }
 
 # Base URL the post-reboot RunOnce re-launch pulls from (from bootstrap.ps1 via
 # -RepoRaw; defaults to main so a direct/clone run still resumes correctly)
 if (-not $RepoRaw) { $RepoRaw = 'https://raw.githubusercontent.com/b-hayes/win11-postinstall/main' }
 
+# Marker that tells a resumed run to do ONLY the deferred steps (set by the pre-update pass)
+$MarkerPath = Join-Path $env:ProgramData 'Win11PostInstall\pending-deferred.flag'
+
 $restartReasons = @()
+
+# ============================================================
+# RESUME MODE - only the deferred steps, nothing from scratch
+# ============================================================
+if (Test-Path $MarkerPath) {
+    Write-Header "Resuming - Deferred Steps"
+    Write-Host "  Finishing the steps that were deferred before your reboot." -ForegroundColor White
+    Invoke-DeferredSteps
+    Remove-Item $MarkerPath -Force -ErrorAction SilentlyContinue
+    Write-Header "All Done"
+    if ($restartReasons.Count -gt 0) {
+        Write-Host "  Some changes need a restart to take full effect:" -ForegroundColor White
+        foreach ($r in $restartReasons) { Write-Host "    - $r" -ForegroundColor Gray }
+    } else {
+        Write-Host "  No restart required." -ForegroundColor Green
+    }
+    Write-Host ""
+    Read-Host "  Press Enter to close this window"
+    return
+}
 
 # ============================================================
 # OVERVIEW
@@ -341,26 +506,7 @@ if ($doMode -eq 1 -and $noReboot -eq 1) {
     Write-Done "P2P set to LAN-only, no auto-reboots, no silent sign-in, no app relaunch"
 }
 
-# ============================================================
-# 5. BLOATWARE REMOVAL
-# ============================================================
-#    Delegated to bin/debloat.ps1 - the single source of truth for the app list.
-if ($preUpdatePass) { Skip-Flaky "Bloatware Removal" } else {
-Write-Header "Bloatware Removal"
-$debloatScript = Join-Path $PSScriptRoot "..\..\bin\debloat.ps1"
-if (-not (Test-Path $debloatScript)) {
-    Write-Host "  bin/debloat.ps1 not found - skipping" -ForegroundColor Yellow
-} else {
-    Write-Host "  Runs bin/debloat: uninstalls built-in and pushed Microsoft/third-party apps." -ForegroundColor White
-    $doDebloat = Read-Host "  Remove bloatware now? [Y/n]"
-    if ($doDebloat -notmatch '^[Nn]') {
-        # Already elevated - invoke inline (no re-elevation prompt)
-        & $debloatScript -Yes
-    } else {
-        Write-Skip "Skipping bloatware removal (run later with: bin/debloat)"
-    }
-}
-}
+# (Bloatware removal is a deferred step - see Invoke-DeferredSteps, run near the end.)
 
 # ============================================================
 # 6. HIBERNATION
@@ -535,74 +681,7 @@ if (-not (Test-Path $gamingScript)) {
     }
 }
 
-# ============================================================
-# 10. BRAVE BROWSER
-# ============================================================
-if ($preUpdatePass) { Skip-Flaky "Brave Browser" } else {
-Write-Header "Brave Browser"
-$braveExe = "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"
-if (Test-Path $braveExe) {
-    Write-Skip "Brave already installed"
-} else {
-    $installBrave = Read-Host "  Install Brave Browser? [Y/n]"
-    if ($installBrave -notmatch '^[Nn]') {
-        if (Get-Command winget -ErrorAction SilentlyContinue) {
-            Write-Step "Checking internet connection..."
-            $hasInternet = Test-Internet
-            if (-not $hasInternet) {
-                Write-Host "  No internet detected - connect first, then re-run this step." -ForegroundColor Yellow
-                Write-Host "  Manual install: winget install --id Brave.Brave" -ForegroundColor DarkGray
-            } else {
-                Write-Step "Resetting winget sources..."
-                winget source reset --force 2>&1 | Out-Null
-                Write-Step "Installing Brave via winget..."
-                winget install --id Brave.Brave -e --source winget `
-                      --accept-package-agreements --accept-source-agreements
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Done "Brave installed"
-                } else {
-                    Write-Host "  winget install failed (exit $LASTEXITCODE) - download from brave.com" -ForegroundColor Yellow
-                }
-
-                $setDefault = Read-Host "  Set Brave as default browser? [Y/n]"
-                if ($setDefault -notmatch '^[Nn]') {
-                    Write-Step "Suppressing Edge default-browser nag (policy key)..."
-                    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "DefaultBrowserSettingEnabled" 0
-
-                    Write-Step "Bootstrapping NuGet and installing PS-SFTA..."
-                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser -ErrorAction SilentlyContinue | Out-Null
-                    if (-not (Get-PSRepository -Name PSGallery -EA SilentlyContinue)) {
-                        Register-PSRepository -Default -ErrorAction SilentlyContinue | Out-Null
-                    }
-                    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-                    Install-Module -Name PS-SFTA -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction SilentlyContinue
-
-                    if (Get-Module -ListAvailable -Name PS-SFTA) {
-                        Import-Module PS-SFTA
-                        Write-Step "Writing UserChoice associations for Brave..."
-                        Set-PTA -ProgId BraveHTML -Protocol http
-                        Set-PTA -ProgId BraveHTML -Protocol https
-                        Set-FTA -ProgId BraveHTML -Extension .html
-                        Set-FTA -ProgId BraveHTML -Extension .htm
-                        Write-Done "Brave is now the default browser - Edge nag suppressed"
-                    } else {
-                        Write-Host "  PS-SFTA could not be installed." -ForegroundColor Yellow
-                        Write-Host "  Opening Default Apps - select Brave Browser and click Set default." -ForegroundColor White
-                        Start-Process "ms-settings:defaultapps"
-                    }
-                } else {
-                    Write-Skip "Skipping default browser change"
-                }
-            }
-        } else {
-            Write-Host "  winget not found. Download Brave manually from brave.com" -ForegroundColor Yellow
-        }
-    } else {
-        Write-Skip "Skipping Brave"
-    }
-}
-}
+# (Brave install is a deferred step - see Invoke-DeferredSteps, run near the end.)
 
 # ============================================================
 # 10b. MICROSOFT EDGE DE-NAG
@@ -753,78 +832,12 @@ if ($ap.Hidden -eq 1 -and $ap.HideFileExt -eq 0 -and $ap.SeparateProcess -eq 1 -
     }
 }
 
-# ============================================================
-# 14. CHRIS TITUS TECH WINUTIL
-# ============================================================
-if ($preUpdatePass) { Skip-Flaky "Chris Titus Tech WinUtil" } else {
-Write-Header "Chris Titus Tech WinUtil"
-Write-Host "  WinUtil is an interactive GUI for tweaks, debloating, and software install." -ForegroundColor White
-Write-Host "  It opens in its own window - close it when done and come back here." -ForegroundColor DarkGray
-$runCTT = Read-Host "  Launch WinUtil now? [y/N]"
-if ($runCTT -match '^[Yy]') {
-    Write-Step "Launching WinUtil (requires internet)..."
-    Start-Process powershell.exe `
-        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"irm christitus.com/win | iex`"" `
-        -Verb RunAs -Wait
-    Write-Done "WinUtil closed"
-} else {
-    Write-Skip "Skipping WinUtil"
-    Write-Host "  Run it later with:  irm christitus.com/win | iex" -ForegroundColor DarkGray
-}
-}
+# (WinUtil and Extra UI & System Tweaks are deferred steps - see Invoke-DeferredSteps below.)
 
 # ============================================================
-# 15. EXTRA UI & SYSTEM TWEAKS
+# DEFERRED STEPS (full run only; pre-update defers them to the post-reboot resume)
 # ============================================================
-if ($preUpdatePass) { Skip-Flaky "Extra UI & System Tweaks" } else {
-Write-Header "Extra UI & System Tweaks"
-Write-Host "  Will apply:" -ForegroundColor White
-Write-Host "    - Taskbar search box hidden" -ForegroundColor Gray
-Write-Host "    - 'End Task' added to taskbar right-click menu" -ForegroundColor Gray
-Write-Host "    - Start menu pins emptied" -ForegroundColor Gray
-Write-Host "    - Window transparency on" -ForegroundColor Gray
-Write-Host "    - Edge desktop shortcut removed" -ForegroundColor Gray
-Write-Host "    - Device metadata download and driver co-installers blocked" -ForegroundColor Gray
-Write-Host "    - Internet Explorer feature removed" -ForegroundColor Gray
-$searchBox = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "SearchboxTaskbarMode" -EA SilentlyContinue).SearchboxTaskbarMode
-if ($searchBox -eq 0) {
-    Write-Skip "Extra UI & system tweaks already applied"
-} else {
-    $doExtra = Read-Host "  Apply these tweaks? [y/N]"
-    if ($doExtra -match '^[Yy]') {
-        $adv = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
-
-        Write-Step "Hiding taskbar search box..."
-        Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 0
-
-        Write-Step "Adding 'End Task' to taskbar right-click menu..."
-        Set-Reg "$adv\TaskbarDeveloperSettings" "TaskbarEndTask" 1
-
-        Write-Step "Emptying Start menu pins..."
-        Set-RegStr "HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start" "ConfigureStartPins" '{"pinnedList":[]}'
-
-        Write-Step "Enabling window transparency..."
-        Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "EnableTransparency" 1
-
-        Write-Step "Removing Edge desktop shortcut..."
-        Remove-Item "$env:PUBLIC\Desktop\Microsoft Edge.lnk", "$env:USERPROFILE\Desktop\Microsoft Edge.lnk" -Force -EA SilentlyContinue
-
-        Write-Step "Blocking device metadata download and driver co-installers..."
-        Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" 1
-        Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Installer" "DisableCoInstallers" 1
-
-        Write-Step "Removing Internet Explorer feature..."
-        Get-WindowsCapability -Online -EA SilentlyContinue |
-            Where-Object { $_.Name -like 'Browser.InternetExplorer*' -and $_.State -eq 'Installed' } |
-            ForEach-Object { Remove-WindowsCapability -Online -Name $_.Name -EA SilentlyContinue | Out-Null }
-
-        Write-Done "Extra UI & system tweaks applied"
-        $restartReasons += "Extra UI & system tweaks - some take effect after restart"
-    } else {
-        Write-Skip "Skipping extra UI & system tweaks"
-    }
-}
-}
+if (-not $preUpdatePass) { Invoke-DeferredSteps }
 
 # ============================================================
 # FINISH
@@ -832,6 +845,11 @@ if ($searchBox -eq 0) {
 Write-Header "All Done"
 
 if ($preUpdatePass) {
+    # Drop the marker so the next run does ONLY the deferred steps (not the whole menu)
+    $markerDir = Split-Path $MarkerPath -Parent
+    if (-not (Test-Path $markerDir)) { New-Item -Path $markerDir -ItemType Directory -Force | Out-Null }
+    Set-Content -Path $MarkerPath -Value (Get-Date).ToString('o') -Force
+
     # Register the resume so the menu re-opens once, after whatever reboot YOU choose
     $ro = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
     if (-not (Test-Path $ro)) { New-Item -Path $ro -Force | Out-Null }
