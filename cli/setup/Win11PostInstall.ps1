@@ -265,6 +265,7 @@ Write-Host "  [7]  Locale / Region      - restore your real language, region and
 Write-Host "  [8]  Gaming & VBS         - bin/gaming-tweaks (Game Mode, DVR/FSO off, MMCSS, power plan, HAGS, VBS)" -ForegroundColor Gray
 Write-Host "  [10] Brave Browser        - optional install via winget + set as default browser" -ForegroundColor Gray
 Write-Host "  [10b] Edge De-Nag         - kill Edge first-run splash, recommendations, sidebar, new-tab feed" -ForegroundColor Gray
+Write-Host "  [10c] Remove OneDrive     - optional: fully uninstall OneDrive + remove its Explorer icon" -ForegroundColor Gray
 Write-Host "  [11] Take Ownership Menu  - adds Take Ownership to right-click for files/folders/drives" -ForegroundColor Gray
 Write-Host "  [12] Dark Mode & Appearance - dark mode, accent on taskbar/borders, auto accent from wallpaper" -ForegroundColor Gray
 Write-Host "  [13] Explorer Settings    - hidden files, file extensions, separate process, start at This PC" -ForegroundColor Gray
@@ -710,6 +711,26 @@ if ($edgeCheck -eq 1) {
     )
     foreach ($t in $edgeTweaks) { Set-Reg $t[0] $t[1] $t[2] }
     Write-Done "Edge nag screens and clutter suppressed"
+}
+
+# ============================================================
+# 10c. REMOVE ONEDRIVE (optional)
+#      Delegated to bin/remove-onedrive.ps1 - opt-in, destructive for OneDrive users.
+# ============================================================
+Write-Header "Remove OneDrive"
+$onedriveScript = Join-Path $PSScriptRoot "..\..\bin\remove-onedrive.ps1"
+if (-not (Test-Path $onedriveScript)) {
+    Write-Host "  bin/remove-onedrive.ps1 not found - skipping" -ForegroundColor Yellow
+} else {
+    Write-Host "  Optional: fully uninstall OneDrive and remove its File Explorer icon." -ForegroundColor White
+    Write-Host "  Only for people who don't use OneDrive. Your OneDrive folder stays untouched." -ForegroundColor DarkGray
+    $doOneDrive = Read-Host "  Remove OneDrive completely? [y/N]"
+    if ($doOneDrive -match '^[Yy]') {
+        # Already elevated - invoke inline, pass -Yes (user already confirmed here)
+        & $onedriveScript -Yes
+    } else {
+        Write-Skip "Leaving OneDrive installed (run later with: bin/remove-onedrive)"
+    }
 }
 
 # ============================================================

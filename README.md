@@ -41,6 +41,7 @@ Run any of these directly from an elevated shell (each self-elevates if needed):
 - `bin/copilot-removal.ps1` - remove Copilot and Windows Recall
 - `bin/nag-removal.ps1` - disable all system nags, ads, suggestions, setup prompts
 - `bin/debloat.ps1` - uninstall built-in and pushed bloatware apps
+- `bin/remove-onedrive.ps1` - fully uninstall OneDrive + remove its File Explorer icon
 - `bin/gaming-tweaks.ps1` - gaming performance tweaks + optional VBS/HVCI disable
 - `bin/guard.ps1` - register the daily guard task (re-runs copilot-removal + nag-removal)
 
