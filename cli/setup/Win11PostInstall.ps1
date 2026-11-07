@@ -832,23 +832,25 @@ if ($searchBox -eq 0) {
 Write-Header "All Done"
 
 if ($preUpdatePass) {
-    Write-Step "Scheduling this menu to re-open after your next sign-in..."
+    # Register the resume so the menu re-opens once, after whatever reboot YOU choose
     $ro = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
     if (-not (Test-Path $ro)) { New-Item -Path $ro -Force | Out-Null }
     $resumeCmd = "powershell -NoProfile -ExecutionPolicy Bypass -Command `"`$RepoRaw='$RepoRaw'; irm `$RepoRaw/bootstrap.ps1 | iex`""
     Set-ItemProperty $ro -Name "Win11PostInstallResume" -Value $resumeCmd -Force
-    Write-Done "Menu will re-open once after reboot (needs internet and a UAC prompt at that sign-in)"
+
     Write-Host ""
-    Write-Host "  Safe tweaks are applied and the guard is in place. Now: let Windows Updates" -ForegroundColor Cyan
-    Write-Host "  finish, then REBOOT. After you sign back in, this menu re-opens to run the" -ForegroundColor Cyan
-    Write-Host "  deferred steps (bloatware, Brave, WinUtil, extra UI)." -ForegroundColor Cyan
+    Write-Host "  PRE-UPDATE STEPS DONE." -ForegroundColor Green
+    Write-Host "    Applied now : privacy, Copilot/Recall, nags/ads, gaming/VBS, daily guard" -ForegroundColor Gray
+    Write-Host "    After reboot: bloatware, Brave, WinUtil, extra UI (this menu re-opens for them)" -ForegroundColor Gray
     Write-Host ""
-    $restart = Read-Host "  Reboot now? [y/N]"
-    if ($restart -match '^[Yy]') {
-        Restart-Computer -Force
-    } else {
-        Write-Host "  Reboot once Windows Updates are done." -ForegroundColor Yellow
-    }
+    Write-Host "  This script will NOT reboot or close on its own." -ForegroundColor Yellow
+    Write-Host "  A pending reboot does NOT mean Windows is finished - it may still be" -ForegroundColor Yellow
+    Write-Host "  downloading or staging more updates. Let Windows Update fully settle, then" -ForegroundColor Yellow
+    Write-Host "  reboot whenever YOU are ready. The menu re-opens automatically afterwards" -ForegroundColor Yellow
+    Write-Host "  (one UAC prompt, needs internet) to finish the remaining steps." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  (Nothing else happens here - this window just waits so you can read the above.)" -ForegroundColor DarkGray
+    Read-Host "  Press Enter to close this window"
     return
 }
 
