@@ -62,12 +62,17 @@ Write-Host "  [2]  Telemetry & Privacy  - registry tweaks to kill data collectio
 Write-Host "  [3]  Cortana & Web Search - disable Cortana, Start menu web results" -ForegroundColor Gray
 Write-Host "  [3b] Copilot & Recall     - offer to run bin/copilot-removal (Copilot, Recall, reinstall guard)" -ForegroundColor Gray
 Write-Host "  [4]  Win11 Adware Tweaks  - widgets off, Teams chat icon off, tip notifications off" -ForegroundColor Gray
+Write-Host "  [4b] Backup & Setup Nags  - kill 'finish setting up' screen and OneDrive backup prompts" -ForegroundColor Gray
+Write-Host "  [4c] Lock Screen Tips     - kill tips/ads overlay, keep Spotlight wallpaper rotation" -ForegroundColor Gray
+Write-Host "  [4d] Accessibility Prompts- disable Sticky/Filter/Toggle Keys shortcut popups" -ForegroundColor Gray
+Write-Host "  [4e] Windows Update       - P2P LAN-only, no auto-reboot, no silent sign-in, no app relaunch" -ForegroundColor Gray
 Write-Host "  [5]  Bloatware Removal    - uninstall built-in Microsoft/third-party apps" -ForegroundColor Gray
 Write-Host "  [6]  Hibernation          - optional: disable hiberfil.sys and reclaim disk space" -ForegroundColor Gray
 Write-Host "  [7]  Locale / Region      - restore your real language, region and timezone" -ForegroundColor Gray
 Write-Host "  [8]  Gaming Performance   - Game Mode, MMCSS, DVR off, FSO off, power plan, HAGS" -ForegroundColor Gray
 Write-Host "  [9]  VBS / HVCI           - optional: disable for 5-10% FPS gain, fixes OC tool compat" -ForegroundColor Gray
 Write-Host "  [10] Brave Browser        - optional install via winget + set as default browser" -ForegroundColor Gray
+Write-Host "  [10b] Edge De-Nag         - kill Edge first-run splash, recommendations, sidebar, new-tab feed" -ForegroundColor Gray
 Write-Host "  [11] Take Ownership Menu  - adds Take Ownership to right-click for files/folders/drives" -ForegroundColor Gray
 Write-Host "  [12] Dark Mode & Appearance - dark mode, accent on taskbar/borders, auto accent from wallpaper" -ForegroundColor Gray
 Write-Host "  [13] Explorer Settings    - hidden files, file extensions, separate process, start at This PC" -ForegroundColor Gray
@@ -179,12 +184,15 @@ if ($cortanaCheck -eq 0 -and $webCheck -eq 1) {
         @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "ContentDeliveryAllowed",      0),
         @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "OemPreInstalledAppsEnabled",  0),
         @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "PreInstalledAppsEnabled",     0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "SubscribedContentEnabled",    0)
+        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "SubscribedContentEnabled",    0),
+        # Search highlights - the bouncing doodles / web content in the search box
+        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\SearchSettings",         "IsDynamicSearchBoxEnabled",   0),
+        @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search",               "EnableDynamicContentInWSB",   0)
     )
     Write-Step "Applying registry tweaks..."
     foreach ($t in $cortanaTweaks) { Set-Reg $t[0] $t[1] $t[2] }
 
-    Write-Done "Cortana and Start menu web search disabled"
+    Write-Done "Cortana, Start menu web search, and search highlights disabled"
 }
 
 # ============================================================
@@ -233,6 +241,86 @@ if ($adwareCheck -eq 0) {
     Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-353696Enabled" 0
 
     Write-Done "Widgets off, Teams chat icon off, tip notifications off"
+}
+
+# ============================================================
+# 4b. BACKUP & "FINISH SETTING UP" NAGS
+# ============================================================
+Write-Header "Backup & Setup Nags"
+$scoobe = (Get-ItemProperty "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\UserProfileEngagement" -Name "ScoobeSystemSettingEnabled" -EA SilentlyContinue).ScoobeSystemSettingEnabled
+$syncNotify = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "ShowSyncProviderNotifications" -EA SilentlyContinue).ShowSyncProviderNotifications
+if ($scoobe -eq 0 -and $syncNotify -eq 0) {
+    Write-Skip "Backup and setup nags already disabled"
+} else {
+    Write-Step "Disabling 'Finish setting up your device' (SCOOBE) screen..."
+    # The welcome/finish-setup experience that nags after feature updates
+    Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\UserProfileEngagement" "ScoobeSystemSettingEnabled" 0
+    # Post-update OOBE privacy/setup pages
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE" "DisablePrivacyExperience" 1
+
+    Write-Step "Disabling OneDrive / 'back up your files' prompts..."
+    # File Explorer sync-provider ads ("back up to OneDrive" banners)
+    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "ShowSyncProviderNotifications" 0
+    # Settings app account/backup suggestion banners
+    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-338380Enabled" 0
+
+    Write-Done "Finish-setup screen and OneDrive backup prompts disabled"
+}
+
+# ============================================================
+# 4c. LOCK SCREEN TIPS (keeps Spotlight wallpaper rotation)
+# ============================================================
+Write-Header "Lock Screen Tips"
+$lsOverlay = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" -Name "RotatingLockScreenOverlayEnabled" -EA SilentlyContinue).RotatingLockScreenOverlayEnabled
+if ($lsOverlay -eq 0) {
+    Write-Skip "Lock screen tips/ads already disabled"
+} else {
+    Write-Step "Disabling lock screen 'fun facts, tips & tricks' overlay..."
+    # Kills the ad/tips overlay only - Spotlight wallpaper rotation is left on
+    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "RotatingLockScreenOverlayEnabled" 0
+    Write-Done "Lock screen tips/ads off (Spotlight wallpapers still rotate)"
+}
+
+# ============================================================
+# 4d. ACCESSIBILITY SHORTCUT PROMPTS
+# ============================================================
+Write-Header "Accessibility Shortcut Prompts"
+$stickyFlags = (Get-ItemProperty "HKCU:\Control Panel\Accessibility\StickyKeys" -Name "Flags" -EA SilentlyContinue).Flags
+if ($stickyFlags -eq "506") {
+    Write-Skip "Accessibility shortcut prompts already disabled"
+} else {
+    Write-Step "Disabling Sticky / Filter / Toggle Keys activation shortcuts..."
+    # String (REG_SZ) values - Flags with the hotkey/on bits cleared
+    Set-RegStr "HKCU:\Control Panel\Accessibility\StickyKeys"       "Flags" "506"
+    Set-RegStr "HKCU:\Control Panel\Accessibility\ToggleKeys"       "Flags" "58"
+    Set-RegStr "HKCU:\Control Panel\Accessibility\Keyboard Response" "Flags" "122"
+    Write-Done "Sticky Keys (5x Shift), Filter Keys, and Toggle Keys prompts disabled"
+}
+
+# ============================================================
+# 4e. WINDOWS UPDATE BEHAVIOR
+# ============================================================
+Write-Header "Windows Update Behavior"
+$doMode = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -EA SilentlyContinue).DODownloadMode
+$noReboot = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name "NoAutoRebootWithLoggedOnUsers" -EA SilentlyContinue).NoAutoRebootWithLoggedOnUsers
+if ($doMode -eq 1 -and $noReboot -eq 1) {
+    Write-Skip "Update sharing and reboot behavior already set"
+} else {
+    Write-Step "Limiting update P2P sharing to the local network only..."
+    # 1 = peer only on the same NAT/LAN - never uploads to the internet
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" "DODownloadMode" 1
+
+    Write-Step "Stopping auto-reboots while signed in..."
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" "NoAutoRebootWithLoggedOnUsers" 1
+
+    Write-Step "Blocking silent auto-sign-in after an update reboot..."
+    # Stops Windows signing you back in overnight to 'finish' an update
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "DisableAutomaticRestartSignOn" 1
+
+    Write-Step "Disabling app relaunch after sign-in..."
+    Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" "RestartApps" 0
+
+    Write-Done "P2P set to LAN-only, no auto-reboots, no silent sign-in, no app relaunch"
 }
 
 # ============================================================
@@ -636,6 +724,35 @@ if (Test-Path $braveExe) {
     } else {
         Write-Skip "Skipping Brave"
     }
+}
+
+# ============================================================
+# 10b. MICROSOFT EDGE DE-NAG
+# ============================================================
+Write-Header "Microsoft Edge De-Nag"
+$edgePol = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+$edgeCheck = (Get-ItemProperty $edgePol -Name "HideFirstRunExperience" -EA SilentlyContinue).HideFirstRunExperience
+if ($edgeCheck -eq 1) {
+    Write-Skip "Edge nag screens already suppressed"
+} else {
+    Write-Step "Suppressing Edge first-run, recommendations, sidebar, and new-tab clutter..."
+    $edgeTweaks = @(
+        @($edgePol, "HideFirstRunExperience",                 1),  # no first-run splash
+        @($edgePol, "ShowRecommendationsEnabled",              0),  # no 'recommended' nags
+        @($edgePol, "SpotlightExperiencesAndRecommendationsEnabled", 0),
+        @($edgePol, "StartupBoostEnabled",                     0),  # no background preload
+        @($edgePol, "BackgroundModeEnabled",                   0),  # don't keep running after close
+        @($edgePol, "HubsSidebarEnabled",                      0),  # no sidebar
+        @($edgePol, "WebWidgetAllowed",                        0),  # no Edge bar widget
+        @($edgePol, "EdgeShoppingAssistantEnabled",            0),
+        @($edgePol, "ShowMicrosoftRewards",                    0),
+        @($edgePol, "PersonalizationReportingEnabled",         0),
+        @($edgePol, "NewTabPageContentEnabled",                0),  # no news feed on new tab
+        @($edgePol, "NewTabPageQuickLinksEnabled",             0),
+        @($edgePol, "DefaultBrowserSettingEnabled",            0)   # no 'make Edge default' nag
+    )
+    foreach ($t in $edgeTweaks) { Set-Reg $t[0] $t[1] $t[2] }
+    Write-Done "Edge nag screens and clutter suppressed"
 }
 
 # ============================================================
