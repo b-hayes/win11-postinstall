@@ -14,8 +14,9 @@ be run on its own. The main script orchestrates them and keeps the one-off tweak
 
 Elevated PowerShell:
 
+<!-- TEMP: pointed at the nag-removal-and-remote-testing branch for testing. Revert to the main one-liner before merge. -->
 ```powershell
-irm https://raw.githubusercontent.com/b-hayes/win11-postinstall/main/bootstrap.ps1 | iex
+$RepoRaw='https://raw.githubusercontent.com/b-hayes/win11-postinstall/nag-removal-and-remote-testing'; irm $RepoRaw/bootstrap.ps1 | iex
 ```
 
 The bootstrap self-elevates, downloads the scripts, and launches the menu.
