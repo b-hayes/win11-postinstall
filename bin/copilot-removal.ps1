@@ -95,6 +95,15 @@ if (-not (Test-Admin)) {
 # ============================================================
 # 1. COPILOT POLICIES
 # ============================================================
+# Tracks whether this run actually changed anything, so we only recommend a restart
+# (and only say "removed") when there was real work - the daily guard run stays quiet.
+$changed = $false
+function Apply-Reg {
+    param([string]$Path, [string]$Name, [int]$Value)
+    $cur = (Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue).$Name
+    if ($cur -ne $Value) { Set-Reg $Path $Name $Value; $script:changed = $true }
+}
+
 Write-Header "Copilot Policies"
 $copilotTweaks = @(
     # New official removal policy - April 2026 update (KB5083769, build 26200.8246).
@@ -114,14 +123,16 @@ $copilotTweaks = @(
     @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "PreInstalledAppsEnabled",    0),
     @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "OemPreInstalledAppsEnabled", 0)
 )
-Write-Step "Applying registry policies..."
-foreach ($t in $copilotTweaks) { Set-Reg $t[0] $t[1] $t[2] }
+foreach ($t in $copilotTweaks) { Apply-Reg $t[0] $t[1] $t[2] }
 
-Write-Step "Blocking Ask Copilot context menu entry..."
 $blocked = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked"
-if (-not (Test-Path $blocked)) { New-Item -Path $blocked -Force | Out-Null }
-New-ItemProperty -Path $blocked -Name "{CB3B0003-8088-4EDE-8769-8B354AB2FF8C}" -PropertyType String -Value "" -Force | Out-Null
-Write-Done "Copilot policies applied"
+$ctxKey  = "{CB3B0003-8088-4EDE-8769-8B354AB2FF8C}"
+if ((Get-ItemProperty -Path $blocked -Name $ctxKey -ErrorAction SilentlyContinue).$ctxKey -eq $null) {
+    if (-not (Test-Path $blocked)) { New-Item -Path $blocked -Force | Out-Null }
+    New-ItemProperty -Path $blocked -Name $ctxKey -PropertyType String -Value "" -Force | Out-Null
+    $changed = $true
+}
+if ($changed) { Write-Done "Copilot policies applied" } else { Write-Skip "Copilot policies already set" }
 
 # ============================================================
 # 2. WINDOWS RECALL / AI SCREEN SNAPSHOTS
@@ -133,22 +144,21 @@ $recallTweaks = @(
     @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "TurnOffSavingSnapshots", 1),
     @("HKCU:\Software\Policies\Microsoft\Windows\WindowsAI", "TurnOffSavingSnapshots", 1)
 )
-Write-Step "Disabling Recall snapshots via policy..."
-foreach ($t in $recallTweaks) { Set-Reg $t[0] $t[1] $t[2] }
+foreach ($t in $recallTweaks) { Apply-Reg $t[0] $t[1] $t[2] }
 
-Write-Step "Removing the Recall optional feature (if present)..."
-try {
-    Disable-WindowsOptionalFeature -Online -FeatureName "Recall" -NoRestart -ErrorAction Stop | Out-Null
+# Only disable the optional feature if it is currently enabled (avoids daily churn)
+$recallFeat = Get-WindowsOptionalFeature -Online -ErrorAction SilentlyContinue |
+    Where-Object { $_.FeatureName -like '*Recall*' -and $_.State -eq 'Enabled' }
+if ($recallFeat) {
+    Write-Step "Removing the Recall optional feature..."
+    $eap = $ErrorActionPreference; $ErrorActionPreference = 'SilentlyContinue'
+    Disable-WindowsOptionalFeature -Online -FeatureName $recallFeat.FeatureName -NoRestart | Out-Null
+    $ErrorActionPreference = $eap
+    $changed = $true
     Write-Done "Recall optional feature disabled"
-} catch {
-    try {
-        Disable-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Recall" -NoRestart -ErrorAction Stop | Out-Null
-        Write-Done "Recall optional feature disabled"
-    } catch {
-        Write-Skip "Recall optional feature not present on this build"
-    }
+} else {
+    Write-Skip "Recall already disabled"
 }
-Write-Done "Recall disabled"
 
 # ============================================================
 # 3. UNINSTALL COPILOT PACKAGES
@@ -172,11 +182,15 @@ foreach ($app in $CopilotPackages) {
         $removedAny = $true
     }
 }
-if ($removedAny) { Write-Done "Copilot packages removed" } else { Write-Skip "No Copilot packages installed" }
+if ($removedAny) { Write-Done "Copilot packages removed"; $changed = $true } else { Write-Skip "No Copilot packages installed" }
 
 Write-Header "Done"
-Write-Host "  Copilot and Recall removed. A restart is recommended for policy changes to" -ForegroundColor Green
-Write-Host "  fully take effect." -ForegroundColor Green
+if ($changed) {
+    Write-Host "  Copilot/Recall removed or policies (re)applied. A restart is recommended" -ForegroundColor Green
+    Write-Host "  for the changes to fully take effect." -ForegroundColor Green
+} else {
+    Write-Host "  Copilot and Recall were already gone - nothing changed, no restart needed." -ForegroundColor Green
+}
 Write-Host ""
 Write-Host "  To keep this applied after feature updates, register the guard: guard" -ForegroundColor DarkGray
 Write-Host ""
