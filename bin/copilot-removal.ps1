@@ -17,6 +17,10 @@
 .PARAMETER Unregister
     Remove the scheduled recheck task and exit. Does not undo the policies.
 
+.PARAMETER Hidden
+    Re-register the scheduled recheck task to run silently (no window) and exit.
+    Keeps the guard running but stops the daily window appearing.
+
 .PARAMETER Help
     Show this usage and exit.
 
@@ -30,6 +34,7 @@
 param(
     [switch]$Yes,
     [switch]$Unregister,
+    [switch]$Hidden,
     [switch]$Help
 )
 
@@ -50,10 +55,11 @@ function Show-Usage {
     Write-Host ""
     Write-Host "  copilot-removal - remove Copilot and Recall, block reinstall" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  Usage: copilot-removal [-Yes] [-Unregister] [-Help]" -ForegroundColor White
+    Write-Host "  Usage: copilot-removal [-Yes] [-Unregister] [-Hidden] [-Help]" -ForegroundColor White
     Write-Host ""
     Write-Host "    -Yes         Accept all prompts (non-interactive)" -ForegroundColor Gray
     Write-Host "    -Unregister  Remove the scheduled recheck task and exit" -ForegroundColor Gray
+    Write-Host "    -Hidden      Re-register the recheck task to run silently and exit" -ForegroundColor Gray
     Write-Host "    -Help        Show this help and exit" -ForegroundColor Gray
     Write-Host ""
 }
@@ -95,6 +101,28 @@ function Confirm-Default-Yes {
     return ($ans -notmatch '^[Nn]')
 }
 
+function Register-RecheckTask {
+    param([bool]$RunHidden)
+    if (-not (Test-Path $InstallDir)) { New-Item -Path $InstallDir -ItemType Directory -Force | Out-Null }
+    # Skip the copy when already running from the installed location (hidden re-register)
+    if ($PSCommandPath -ne $InstalledScript) { Copy-Item -Path $PSCommandPath -Destination $InstalledScript -Force }
+
+    if ($RunHidden) {
+        # Hidden: no window (-WindowStyle Hidden, no -NoExit). S4U runs in the user context
+        # without an interactive desktop session, so nothing flashes on screen.
+        $arg       = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$InstalledScript`" -Yes"
+        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Highest
+    } else {
+        # Visible: -NoExit keeps the elevated window open so a success/failure is always seen
+        $arg       = "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$InstalledScript`" -Yes"
+        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
+    }
+    $action   = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg
+    $triggers = @((New-ScheduledTaskTrigger -AtLogOn), (New-ScheduledTaskTrigger -Daily -At 9am))
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Force | Out-Null
+}
+
 # Self-elevate: relaunch as admin if we are not already (git bash launches without elevation)
 if (-not (Test-Admin)) {
     Write-Warn "Administrator rights required - relaunching elevated..."
@@ -102,6 +130,7 @@ if (-not (Test-Admin)) {
     $argList = @('-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-File', "`"$PSCommandPath`"")
     if ($Yes)        { $argList += '-Yes' }
     if ($Unregister) { $argList += '-Unregister' }
+    if ($Hidden)     { $argList += '-Hidden' }
     try {
         Start-Process powershell.exe -Verb RunAs -ArgumentList $argList
     } catch {
@@ -121,6 +150,21 @@ if ($Unregister) {
     } else {
         Write-Skip "No scheduled task '$TaskName' found"
     }
+    return
+}
+
+# ============================================================
+# HIDE MODE (re-register the recheck task to run silently)
+# ============================================================
+if ($Hidden) {
+    Write-Header "Hide Scheduled Recheck Task"
+    if (-not (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) {
+        Write-Skip "No scheduled task '$TaskName' found - run copilot-removal first to create it"
+        return
+    }
+    Write-Step "Re-registering '$TaskName' to run silently (no window)..."
+    Register-RecheckTask -RunHidden $true
+    Write-Done "Recheck task now runs hidden. Make it visible again with: copilot-removal -Unregister, then re-run copilot-removal"
     return
 }
 
@@ -239,25 +283,8 @@ if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Write-Host "  It runs in a VISIBLE window that stays open so you can read the result." -ForegroundColor Cyan
     if (Confirm-Default-Yes "Register the scheduled recheck task?") {
         Write-Step "Installing script to $InstallDir..."
-        if (-not (Test-Path $InstallDir)) { New-Item -Path $InstallDir -ItemType Directory -Force | Out-Null }
-        Copy-Item -Path $PSCommandPath -Destination $InstalledScript -Force
-
-        Write-Step "Registering scheduled task '$TaskName'..."
-        # Runs as the interactive user with highest privileges (NOT hidden SYSTEM) so the
-        # window is visible on the desktop. -NoExit keeps it open until the user closes it,
-        # so a success or failure is always seen - never hide a run.
-        $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
-                        -Argument "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$InstalledScript`" -Yes"
-        $triggers  = @(
-            (New-ScheduledTaskTrigger -AtLogOn),
-            (New-ScheduledTaskTrigger -Daily -At 9am)
-        )
-        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
-                        -LogonType Interactive -RunLevel Highest
-        $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
-                        -DontStopIfGoingOnBatteries
-        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
-            -Principal $principal -Settings $settings -Force | Out-Null
+        Write-Step "Registering scheduled task '$TaskName' (visible window)..."
+        Register-RecheckTask -RunHidden $false
         Write-Done "Scheduled recheck registered (remove later with: copilot-removal -Unregister)"
     } else {
         Write-Skip "Skipping scheduled recheck"
@@ -268,5 +295,11 @@ Write-Header "Done"
 Write-Host "  Copilot and Recall removed. A restart is recommended for policy changes to" -ForegroundColor Green
 Write-Host "  fully take effect." -ForegroundColor Green
 Write-Host ""
+if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+    Write-Host "  The recheck task opens this window every day. To keep it running but hide it" -ForegroundColor Cyan
+    Write-Host "  so you never see it again, run:" -ForegroundColor Cyan
+    Write-Host "      copilot-removal -Hidden" -ForegroundColor White
+    Write-Host ""
+}
 Write-Host "  Finished - you can close this window." -ForegroundColor Cyan
 Write-Host ""
