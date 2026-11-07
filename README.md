@@ -14,7 +14,11 @@ be run on its own. The main script orchestrates them and keeps the one-off tweak
 
 Elevated PowerShell:
 
-<!-- TEMP: pointed at the nag-removal-and-remote-testing branch for testing. Revert to the main one-liner before merge. -->
+```powershell
+irm https://raw.githubusercontent.com/b-hayes/win11-postinstall/main/bootstrap.ps1 | iex
+```
+
+<!-- TODO: remove this block before merging - test command for the nag-removal-and-remote-testing branch -->
 ```powershell
 $RepoRaw='https://raw.githubusercontent.com/b-hayes/win11-postinstall/nag-removal-and-remote-testing'; irm $RepoRaw/bootstrap.ps1 | iex
 ```
