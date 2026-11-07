@@ -77,6 +77,7 @@ Write-Host "  [11] Take Ownership Menu  - adds Take Ownership to right-click for
 Write-Host "  [12] Dark Mode & Appearance - dark mode, accent on taskbar/borders, auto accent from wallpaper" -ForegroundColor Gray
 Write-Host "  [13] Explorer Settings    - hidden files, file extensions, separate process, start at This PC" -ForegroundColor Gray
 Write-Host "  [14] Chris Titus WinUtil  - optional interactive tweaks and software install" -ForegroundColor Gray
+Write-Host "  [15] Extra UI & System    - search box, taskbar, transparency, IE removal, misc tweaks" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Steps already done will be skipped automatically." -ForegroundColor DarkGray
 Write-Host "  A restart will be offered at the end if anything needs it." -ForegroundColor DarkGray
@@ -257,6 +258,8 @@ if ($scoobe -eq 0 -and $syncNotify -eq 0) {
     Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\UserProfileEngagement" "ScoobeSystemSettingEnabled" 0
     # Post-update OOBE privacy/setup pages
     Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OOBE" "DisablePrivacyExperience" 1
+    # "Suggest ways I can finish setting up my device" notification toast
+    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\Windows.SystemToast.Suggested" "Enabled" 0
 
     Write-Step "Disabling OneDrive / 'back up your files' prompts..."
     # File Explorer sync-provider ads ("back up to OneDrive" banners)
@@ -264,7 +267,11 @@ if ($scoobe -eq 0 -and $syncNotify -eq 0) {
     # Settings app account/backup suggestion banners
     Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-338380Enabled" 0
 
-    Write-Done "Finish-setup screen and OneDrive backup prompts disabled"
+    Write-Step "Disabling Start menu recommendations..."
+    # "Recommended" section pushing recently-added apps and promoted content
+    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" "Start_IrisRecommendations" 0
+
+    Write-Done "Finish-setup screen, setup toast, Start recommendations, and OneDrive prompts disabled"
 }
 
 # ============================================================
@@ -891,6 +898,57 @@ if ($runCTT -match '^[Yy]') {
 } else {
     Write-Skip "Skipping WinUtil"
     Write-Host "  Run it later with:  irm christitus.com/win | iex" -ForegroundColor DarkGray
+}
+
+# ============================================================
+# 15. EXTRA UI & SYSTEM TWEAKS
+# ============================================================
+Write-Header "Extra UI & System Tweaks"
+Write-Host "  Will apply:" -ForegroundColor White
+Write-Host "    - Taskbar search box hidden" -ForegroundColor Gray
+Write-Host "    - 'End Task' added to taskbar right-click menu" -ForegroundColor Gray
+Write-Host "    - Start menu pins emptied" -ForegroundColor Gray
+Write-Host "    - Window transparency on" -ForegroundColor Gray
+Write-Host "    - Edge desktop shortcut removed" -ForegroundColor Gray
+Write-Host "    - Device metadata download and driver co-installers blocked" -ForegroundColor Gray
+Write-Host "    - Internet Explorer feature removed" -ForegroundColor Gray
+$searchBox = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "SearchboxTaskbarMode" -EA SilentlyContinue).SearchboxTaskbarMode
+if ($searchBox -eq 0) {
+    Write-Skip "Extra UI & system tweaks already applied"
+} else {
+    $doExtra = Read-Host "  Apply these tweaks? [y/N]"
+    if ($doExtra -match '^[Yy]') {
+        $adv = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+
+        Write-Step "Hiding taskbar search box..."
+        Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 0
+
+        Write-Step "Adding 'End Task' to taskbar right-click menu..."
+        Set-Reg "$adv\TaskbarDeveloperSettings" "TaskbarEndTask" 1
+
+        Write-Step "Emptying Start menu pins..."
+        Set-RegStr "HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start" "ConfigureStartPins" '{"pinnedList":[]}'
+
+        Write-Step "Enabling window transparency..."
+        Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "EnableTransparency" 1
+
+        Write-Step "Removing Edge desktop shortcut..."
+        Remove-Item "$env:PUBLIC\Desktop\Microsoft Edge.lnk", "$env:USERPROFILE\Desktop\Microsoft Edge.lnk" -Force -EA SilentlyContinue
+
+        Write-Step "Blocking device metadata download and driver co-installers..."
+        Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" 1
+        Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Installer" "DisableCoInstallers" 1
+
+        Write-Step "Removing Internet Explorer feature..."
+        Get-WindowsCapability -Online -EA SilentlyContinue |
+            Where-Object { $_.Name -like 'Browser.InternetExplorer*' -and $_.State -eq 'Installed' } |
+            ForEach-Object { Remove-WindowsCapability -Online -Name $_.Name -EA SilentlyContinue | Out-Null }
+
+        Write-Done "Extra UI & system tweaks applied"
+        $restartReasons += "Extra UI & system tweaks - some take effect after restart"
+    } else {
+        Write-Skip "Skipping extra UI & system tweaks"
+    }
 }
 
 # ============================================================

@@ -207,7 +207,28 @@ foreach ($app in $CopilotPackages) {
 if ($removedAny) { Write-Done "Copilot packages removed" } else { Write-Skip "No Copilot packages installed" }
 
 # ============================================================
-# 4. SCHEDULED RECHECK (reinstall guard)
+# 4. BOOT NAGS & ADS (reset by feature updates, so re-applied here)
+# ============================================================
+Write-Header "Boot Nags & Ads"
+$CDM = "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
+$ADV = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+$nagTweaks = @(
+    # "Let's finish setting up your device" full-screen page after restart / feature update (SCOOBE)
+    @("HKCU:\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement", "ScoobeSystemSettingEnabled", 0),
+    # "Suggest ways I can finish setting up my device" notification
+    @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings\Windows.SystemToast.Suggested", "Enabled", 0),
+    # Lock screen tips overlay (Spotlight wallpaper rotation intentionally left on)
+    @($CDM, "RotatingLockScreenOverlayEnabled", 0),
+    # Start menu "recommendations", and File Explorer OneDrive/Office ad banners
+    @($ADV, "Start_IrisRecommendations",     0),
+    @($ADV, "ShowSyncProviderNotifications", 0)
+)
+Write-Step "Disabling boot nags and Start/lock-screen ads..."
+foreach ($t in $nagTweaks) { Set-Reg $t[0] $t[1] $t[2] }
+Write-Done "Boot nags and ads disabled"
+
+# ============================================================
+# 5. SCHEDULED RECHECK (reinstall guard)
 # ============================================================
 Write-Header "Reinstall Guard (Scheduled Recheck)"
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
