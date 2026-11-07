@@ -45,6 +45,30 @@ function Test-Internet {
     } catch { return $false }
 }
 
+function Test-PendingReboot {
+    $keys = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+    )
+    foreach ($k in $keys) { if (Test-Path $k) { return $true } }
+    $sm = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name PendingFileRenameOperations -EA SilentlyContinue
+    return [bool]$sm.PendingFileRenameOperations
+}
+function Test-UpdateActive {
+    foreach ($n in @('TiWorker','TrustedInstaller','MoUsoCoreWorker','UsoClient','wuauclt')) {
+        if (Get-Process -Name $n -EA SilentlyContinue) { return $true }
+    }
+    return $false
+}
+function Skip-Flaky {
+    param([string]$Name)
+    Write-Header $Name
+    Write-Skip "Deferred until after Windows Updates + reboot (menu re-opens to finish)"
+}
+
+# URL the post-reboot RunOnce re-launch pulls from (same as bootstrap.ps1)
+$BootstrapUrl = 'https://raw.githubusercontent.com/b-hayes/win11-postinstall/main/bootstrap.ps1'
+
 $restartReasons = @()
 
 # ============================================================
@@ -83,6 +107,33 @@ Write-Host ""
 Write-Host "  Press any key to begin..." -ForegroundColor Yellow
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
 Write-Host ""
+
+# ============================================================
+# NEW MACHINE / PRE-UPDATE DETECTION
+# ============================================================
+Write-Header "New Machine Check"
+$pendingReboot = Test-PendingReboot
+$updateActive  = Test-UpdateActive
+$preUpdatePass = $false
+if ($pendingReboot -or $updateActive) {
+    Write-Host "  Heads up: Windows Update looks active or a reboot is already pending." -ForegroundColor Yellow
+}
+Write-Host "  On a brand-new install it's best to let Windows Updates fully finish and reboot" -ForegroundColor White
+Write-Host "  BEFORE the flaky steps run - feature updates can re-enable VBS, re-add some apps," -ForegroundColor Gray
+Write-Host "  and bring back the 'finish setting up' nag." -ForegroundColor Gray
+$defaultNew = if ($pendingReboot -or $updateActive) { 'Y/n' } else { 'y/N' }
+$newMachine = Read-Host "  New machine with Windows Updates not yet finished? [$defaultNew]"
+# Default follows the detection hint: yes when an update/reboot is pending, otherwise no
+$newMachine = if ($newMachine) { $newMachine } elseif ($pendingReboot -or $updateActive) { 'y' } else { 'n' }
+if ($newMachine -match '^[Yy]') {
+    $preUpdatePass = $true
+    Write-Host ""
+    Write-Host "  Pre-update mode: applying only the safe, durable tweaks now and SKIPPING the" -ForegroundColor Cyan
+    Write-Host "  flaky steps (bloatware, gaming/VBS, Brave, WinUtil, extra UI)." -ForegroundColor Cyan
+    Write-Host "  This menu will re-open automatically after your next reboot to finish them." -ForegroundColor Cyan
+} else {
+    Write-Host "  Full run: all steps offered." -ForegroundColor DarkGray
+}
 
 # ============================================================
 # 1. COMPUTER NAME
@@ -289,6 +340,7 @@ if ($doMode -eq 1 -and $noReboot -eq 1) {
 # 5. BLOATWARE REMOVAL
 # ============================================================
 #    Delegated to bin/debloat.ps1 - the single source of truth for the app list.
+if ($preUpdatePass) { Skip-Flaky "Bloatware Removal" } else {
 Write-Header "Bloatware Removal"
 $debloatScript = Join-Path $PSScriptRoot "..\..\bin\debloat.ps1"
 if (-not (Test-Path $debloatScript)) {
@@ -302,6 +354,7 @@ if (-not (Test-Path $debloatScript)) {
     } else {
         Write-Skip "Skipping bloatware removal (run later with: bin/debloat)"
     }
+}
 }
 
 # ============================================================
@@ -456,6 +509,7 @@ if ($currentCulture -ne 'en-001') {
 #    Delegated to bin/gaming-tweaks.ps1 - gaming performance tweaks and the
 #    optional VBS/HVCI disable, with their own HAGS/VBS prompts.
 # ============================================================
+if ($preUpdatePass) { Skip-Flaky "Gaming & VBS" } else {
 Write-Header "Gaming & VBS"
 $gamingScript = Join-Path $PSScriptRoot "..\..\bin\gaming-tweaks.ps1"
 if (-not (Test-Path $gamingScript)) {
@@ -472,10 +526,12 @@ if (-not (Test-Path $gamingScript)) {
         Write-Skip "Skipping gaming & VBS tweaks (run later with: bin/gaming-tweaks)"
     }
 }
+}
 
 # ============================================================
 # 10. BRAVE BROWSER
 # ============================================================
+if ($preUpdatePass) { Skip-Flaky "Brave Browser" } else {
 Write-Header "Brave Browser"
 $braveExe = "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"
 if (Test-Path $braveExe) {
@@ -538,6 +594,7 @@ if (Test-Path $braveExe) {
     } else {
         Write-Skip "Skipping Brave"
     }
+}
 }
 
 # ============================================================
@@ -692,6 +749,7 @@ if ($ap.Hidden -eq 1 -and $ap.HideFileExt -eq 0 -and $ap.SeparateProcess -eq 1 -
 # ============================================================
 # 14. CHRIS TITUS TECH WINUTIL
 # ============================================================
+if ($preUpdatePass) { Skip-Flaky "Chris Titus Tech WinUtil" } else {
 Write-Header "Chris Titus Tech WinUtil"
 Write-Host "  WinUtil is an interactive GUI for tweaks, debloating, and software install." -ForegroundColor White
 Write-Host "  It opens in its own window - close it when done and come back here." -ForegroundColor DarkGray
@@ -706,10 +764,12 @@ if ($runCTT -match '^[Yy]') {
     Write-Skip "Skipping WinUtil"
     Write-Host "  Run it later with:  irm christitus.com/win | iex" -ForegroundColor DarkGray
 }
+}
 
 # ============================================================
 # 15. EXTRA UI & SYSTEM TWEAKS
 # ============================================================
+if ($preUpdatePass) { Skip-Flaky "Extra UI & System Tweaks" } else {
 Write-Header "Extra UI & System Tweaks"
 Write-Host "  Will apply:" -ForegroundColor White
 Write-Host "    - Taskbar search box hidden" -ForegroundColor Gray
@@ -757,11 +817,34 @@ if ($searchBox -eq 0) {
         Write-Skip "Skipping extra UI & system tweaks"
     }
 }
+}
 
 # ============================================================
 # FINISH
 # ============================================================
 Write-Header "All Done"
+
+if ($preUpdatePass) {
+    Write-Step "Scheduling this menu to re-open after your next sign-in..."
+    $ro = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
+    if (-not (Test-Path $ro)) { New-Item -Path $ro -Force | Out-Null }
+    $resumeCmd = "powershell -NoProfile -ExecutionPolicy Bypass -Command `"irm $BootstrapUrl | iex`""
+    Set-ItemProperty $ro -Name "Win11PostInstallResume" -Value $resumeCmd -Force
+    Write-Done "Menu will re-open once after reboot (needs internet and a UAC prompt at that sign-in)"
+    Write-Host ""
+    Write-Host "  Safe tweaks are applied and the guard is in place. Now: let Windows Updates" -ForegroundColor Cyan
+    Write-Host "  finish, then REBOOT. After you sign back in, this menu re-opens to run the" -ForegroundColor Cyan
+    Write-Host "  deferred steps (bloatware, gaming/VBS, Brave, WinUtil, extra UI)." -ForegroundColor Cyan
+    Write-Host ""
+    $restart = Read-Host "  Reboot now? [y/N]"
+    if ($restart -match '^[Yy]') {
+        Restart-Computer -Force
+    } else {
+        Write-Host "  Reboot once Windows Updates are done." -ForegroundColor Yellow
+    }
+    return
+}
+
 if ($restartReasons.Count -gt 0) {
     Write-Host "  The following changes require a restart to take full effect:" -ForegroundColor White
     foreach ($r in $restartReasons) { Write-Host "    - $r" -ForegroundColor Gray }
