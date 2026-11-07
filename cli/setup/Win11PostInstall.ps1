@@ -129,7 +129,7 @@ if ($newMachine -match '^[Yy]') {
     $preUpdatePass = $true
     Write-Host ""
     Write-Host "  Pre-update mode: applying only the safe, durable tweaks now and SKIPPING the" -ForegroundColor Cyan
-    Write-Host "  flaky steps (bloatware, gaming/VBS, Brave, WinUtil, extra UI)." -ForegroundColor Cyan
+    Write-Host "  flaky steps (bloatware, Brave, WinUtil, extra UI)." -ForegroundColor Cyan
     Write-Host "  This menu will re-open automatically after your next reboot to finish them." -ForegroundColor Cyan
 } else {
     Write-Host "  Full run: all steps offered." -ForegroundColor DarkGray
@@ -509,7 +509,6 @@ if ($currentCulture -ne 'en-001') {
 #    Delegated to bin/gaming-tweaks.ps1 - gaming performance tweaks and the
 #    optional VBS/HVCI disable, with their own HAGS/VBS prompts.
 # ============================================================
-if ($preUpdatePass) { Skip-Flaky "Gaming & VBS" } else {
 Write-Header "Gaming & VBS"
 $gamingScript = Join-Path $PSScriptRoot "..\..\bin\gaming-tweaks.ps1"
 if (-not (Test-Path $gamingScript)) {
@@ -517,6 +516,10 @@ if (-not (Test-Path $gamingScript)) {
 } else {
     Write-Host "  Runs bin/gaming-tweaks: Game Mode, DVR/FSO off, MMCSS, power plan, HAGS," -ForegroundColor White
     Write-Host "  and an optional VBS/HVCI disable for a 5-10% FPS gain." -ForegroundColor Gray
+    if ($preUpdatePass) {
+        Write-Host "  (Registry-only - safe pre-update; HAGS will take effect on the reboot." -ForegroundColor DarkGray
+        Write-Host "   A later feature upgrade can re-enable VBS - re-run this if so.)" -ForegroundColor DarkGray
+    }
     $doGaming = Read-Host "  Run gaming & VBS tweaks now? [Y/n]"
     if ($doGaming -notmatch '^[Nn]') {
         # Already elevated - invoke inline (no re-elevation prompt)
@@ -525,7 +528,6 @@ if (-not (Test-Path $gamingScript)) {
     } else {
         Write-Skip "Skipping gaming & VBS tweaks (run later with: bin/gaming-tweaks)"
     }
-}
 }
 
 # ============================================================
@@ -834,7 +836,7 @@ if ($preUpdatePass) {
     Write-Host ""
     Write-Host "  Safe tweaks are applied and the guard is in place. Now: let Windows Updates" -ForegroundColor Cyan
     Write-Host "  finish, then REBOOT. After you sign back in, this menu re-opens to run the" -ForegroundColor Cyan
-    Write-Host "  deferred steps (bloatware, gaming/VBS, Brave, WinUtil, extra UI)." -ForegroundColor Cyan
+    Write-Host "  deferred steps (bloatware, Brave, WinUtil, extra UI)." -ForegroundColor Cyan
     Write-Host ""
     $restart = Read-Host "  Reboot now? [y/N]"
     if ($restart -match '^[Yy]') {

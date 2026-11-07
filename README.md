@@ -26,7 +26,7 @@ Install Windows, connect to the internet, and let Windows Updates fully finish a
 reboot before the one-off installers run. The script asks up front whether this is a
 new machine with updates unfinished (pre-filled yes if it detects a pending reboot or
 active update). In that pre-update pass it applies only the safe, durable tweaks plus
-the guard, skips the flaky steps (bloatware, gaming/VBS, Brave, WinUtil, extra UI), and
+the guard, skips the flaky steps (bloatware, Brave, WinUtil, extra UI), and
 registers a one-time RunOnce so the menu re-opens after the next reboot to finish them.
 
 ## Standalone modules
