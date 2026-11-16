@@ -3,7 +3,11 @@
 .SYNOPSIS
     Windows 11 post-install setup script.
     Run once after a clean Windows install.
+.PARAMETER RepoRaw
+    Raw base URL the post-reboot resume pulls from (passed by bootstrap.ps1).
+    Defaults to main; carries the branch through when testing.
 #>
+param([string]$RepoRaw)
 
 $ErrorActionPreference = 'Continue'
 
@@ -14,6 +18,28 @@ function Write-Header {
     Write-Host "  $Text" -ForegroundColor Cyan
     Write-Host ("=" * 50) -ForegroundColor Cyan
 }
+# ------------------------------------------------------------
+# RUN LOG
+# Every prompt and answer goes to a tab-separated choices file, and the whole
+# session to a transcript, so a run can be reviewed (or diffed) afterwards.
+# ------------------------------------------------------------
+$LogDir    = Join-Path $env:ProgramData 'Win11PostInstall\logs'
+$RunStamp  = (Get-Date).ToString('yyyyMMdd-HHmmss')
+$ChoiceLog = Join-Path $LogDir "choices-$RunStamp.tsv"
+$Transcript = Join-Path $LogDir "transcript-$RunStamp.log"
+if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
+Set-Content -Path $ChoiceLog -Value "time`tprompt`tanswer" -Encoding UTF8
+try { Start-Transcript -Path $Transcript -Force | Out-Null } catch { }
+
+# Read-Host, but the prompt and what you typed are recorded
+function Read-Choice {
+    param([string]$Prompt)
+    $answer = Read-Host $Prompt
+    $line = "{0}`t{1}`t{2}" -f (Get-Date -Format 'HH:mm:ss'), $Prompt.Trim(), $answer
+    Add-Content -Path $ChoiceLog -Value $line -Encoding UTF8
+    return $answer
+}
+
 function Write-Step { param([string]$T); Write-Host "  [*] $T" -ForegroundColor Yellow }
 function Write-Done { param([string]$T); Write-Host "  [+] $T" -ForegroundColor Green }
 function Write-Skip { param([string]$T); Write-Host "  [-] $T" -ForegroundColor DarkGray }
@@ -45,7 +71,219 @@ function Test-Internet {
     } catch { return $false }
 }
 
+function Test-PendingReboot {
+    $keys = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending'
+    )
+    foreach ($k in $keys) { if (Test-Path $k) { return $true } }
+    $sm = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name PendingFileRenameOperations -EA SilentlyContinue
+    return [bool]$sm.PendingFileRenameOperations
+}
+function Test-UpdateActive {
+    foreach ($n in @('TiWorker','TrustedInstaller','MoUsoCoreWorker','UsoClient','wuauclt')) {
+        if (Get-Process -Name $n -EA SilentlyContinue) { return $true }
+    }
+    return $false
+}
+# The flaky steps deferred by the pre-update pass. Called at the end of a full run,
+# and on their own by the post-reboot resume. Nothing else runs in resume mode.
+function Invoke-DeferredSteps {
+    # --- Bloatware (bin/debloat.ps1) ---
+    Write-Header "Bloatware Removal"
+    $debloatScript = Join-Path $PSScriptRoot "..\..\bin\debloat.ps1"
+    if (-not (Test-Path $debloatScript)) {
+        Write-Host "  bin/debloat.ps1 not found - skipping" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Runs bin/debloat: uninstalls built-in and pushed Microsoft/third-party apps." -ForegroundColor White
+        $doDebloat = Read-Choice "  Remove bloatware now? [Y/n]"
+        if ($doDebloat -notmatch '^[Nn]') {
+            & $debloatScript -Yes
+        } else {
+            Write-Skip "Skipping bloatware removal (run later with: bin/debloat)"
+        }
+    }
+
+    # --- Brave Browser ---
+    Write-Header "Brave Browser"
+    # Brave installs per-machine OR per-user, so check all three locations - only
+    # looking in Program Files makes a per-user install invisible and winget then
+    # fails trying to install over it.
+    $braveExes = @(
+        "$env:ProgramFiles\BraveSoftware\Brave-Browser\Applicationrave.exe"
+        "${env:ProgramFiles(x86)}\BraveSoftware\Brave-Browser\Applicationrave.exe"
+        "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Applicationrave.exe"
+    )
+    $braveExe = $braveExes | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($braveExe) {
+        Write-Skip "Brave already installed ($braveExe)"
+    } else {
+        $installBrave = Read-Choice "  Install Brave Browser? [Y/n]"
+        if ($installBrave -notmatch '^[Nn]') {
+            if (Get-Command winget -ErrorAction SilentlyContinue) {
+                Write-Step "Checking internet connection..."
+                if (-not (Test-Internet)) {
+                    Write-Host "  No internet detected - connect first, then re-run this step." -ForegroundColor Yellow
+                    Write-Host "  Manual install: winget install --id Brave.Brave" -ForegroundColor DarkGray
+                } else {
+                    Write-Step "Resetting winget sources..."
+                    winget source reset --force 2>&1 | Out-Null
+                    Write-Step "Installing Brave via winget..."
+                    winget install --id Brave.Brave -e --source winget `
+                          --accept-package-agreements --accept-source-agreements
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Done "Brave installed"
+                    } else {
+                        Write-Host "  winget install failed (exit $LASTEXITCODE)" -ForegroundColor Yellow
+                        if ($braveExes | Where-Object { Test-Path $_ }) {
+                            Write-Host "  Brave is in fact installed - winget just could not manage it." -ForegroundColor Gray
+                        } else {
+                            Write-Host "  Download it from brave.com instead." -ForegroundColor Gray
+                        }
+                    }
+
+                    Write-Host ""
+                    Write-Host "  [!] THIS NEEDS MANUAL CLICKS." -ForegroundColor Red
+                    Write-Host "      Windows Settings will open on Default apps. Windows only lets a" -ForegroundColor Yellow
+                    Write-Host "      script set some associations, so Edge keeps handling the rest" -ForegroundColor Yellow
+                    Write-Host "      (PDF, .html files, some link types) until you change them there" -ForegroundColor Yellow
+                    Write-Host "      by hand. Set Brave as default, then work down the file types." -ForegroundColor Yellow
+                    Write-Host ""
+                    $setDefault = Read-Choice "  Set Brave as default browser? [Y/n]"
+                    if ($setDefault -notmatch '^[Nn]') {
+                        Write-Step "Suppressing Edge default-browser nag (policy key)..."
+                        Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "DefaultBrowserSettingEnabled" 0
+
+                        Write-Step "Bootstrapping NuGet and installing PS-SFTA..."
+                        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser -ErrorAction SilentlyContinue | Out-Null
+                        if (-not (Get-PSRepository -Name PSGallery -EA SilentlyContinue)) {
+                            Register-PSRepository -Default -ErrorAction SilentlyContinue | Out-Null
+                        }
+                        Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
+                        Install-Module -Name PS-SFTA -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction SilentlyContinue
+
+                        if (Get-Module -ListAvailable -Name PS-SFTA) {
+                            Import-Module PS-SFTA
+                            Write-Step "Writing UserChoice associations for Brave..."
+                            Set-PTA -ProgId BraveHTML -Protocol http
+                            Set-PTA -ProgId BraveHTML -Protocol https
+                            Set-FTA -ProgId BraveHTML -Extension .html
+                            Set-FTA -ProgId BraveHTML -Extension .htm
+                            Write-Done "Brave is now the default browser - Edge nag suppressed"
+                        } else {
+                            Write-Host "  PS-SFTA could not be installed." -ForegroundColor Yellow
+                            Write-Host "  Opening Default Apps - select Brave Browser and click Set default." -ForegroundColor White
+                            Start-Process "ms-settings:defaultapps"
+                        }
+                    } else {
+                        Write-Skip "Skipping default browser change"
+                    }
+                }
+            } else {
+                Write-Host "  winget not found. Download Brave manually from brave.com" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Skip "Skipping Brave"
+        }
+    }
+
+    # --- Chris Titus Tech WinUtil ---
+    Write-Header "Chris Titus Tech WinUtil"
+    Write-Host "  WinUtil is an interactive GUI for tweaks, debloating, and software install." -ForegroundColor White
+    Write-Host "  It opens in its own window - close it when done and come back here." -ForegroundColor DarkGray
+    $runCTT = Read-Choice "  Launch WinUtil now? [y/N]"
+    if ($runCTT -match '^[Yy]') {
+        Write-Step "Launching WinUtil (requires internet)..."
+        Start-Process powershell.exe `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"irm christitus.com/win | iex`"" `
+            -Verb RunAs -Wait
+        Write-Done "WinUtil closed"
+    } else {
+        Write-Skip "Skipping WinUtil"
+        Write-Host "  Run it later with:  irm christitus.com/win | iex" -ForegroundColor DarkGray
+    }
+
+    # --- Extra UI & System Tweaks ---
+    Write-Header "Extra UI & System Tweaks"
+    Write-Host "  Will apply:" -ForegroundColor White
+    Write-Host "    - Taskbar search box hidden" -ForegroundColor Gray
+    Write-Host "    - 'End Task' added to taskbar right-click menu" -ForegroundColor Gray
+    Write-Host "    - Start menu pins emptied" -ForegroundColor Gray
+    Write-Host "    - Window transparency on" -ForegroundColor Gray
+    Write-Host "    - Edge desktop shortcut removed" -ForegroundColor Gray
+    Write-Host "    - Device metadata download and driver co-installers blocked" -ForegroundColor Gray
+    Write-Host "    - Internet Explorer feature removed" -ForegroundColor Gray
+    $searchBox = (Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "SearchboxTaskbarMode" -EA SilentlyContinue).SearchboxTaskbarMode
+    if ($searchBox -eq 0) {
+        Write-Skip "Extra UI & system tweaks already applied"
+    } else {
+        $doExtra = Read-Choice "  Apply these tweaks? [y/N]"
+        if ($doExtra -match '^[Yy]') {
+            $adv = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+
+            Write-Step "Hiding taskbar search box..."
+            Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 0
+
+            Write-Step "Adding 'End Task' to taskbar right-click menu..."
+            Set-Reg "$adv\TaskbarDeveloperSettings" "TaskbarEndTask" 1
+
+            Write-Step "Emptying Start menu pins..."
+            Set-RegStr "HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start" "ConfigureStartPins" '{"pinnedList":[]}'
+
+            Write-Step "Enabling window transparency..."
+            Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "EnableTransparency" 1
+
+            Write-Step "Removing Edge desktop shortcut..."
+            Remove-Item "$env:PUBLIC\Desktop\Microsoft Edge.lnk", "$env:USERPROFILE\Desktop\Microsoft Edge.lnk" -Force -EA SilentlyContinue
+
+            Write-Step "Blocking device metadata download and driver co-installers..."
+            Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Metadata" "PreventDeviceMetadataFromNetwork" 1
+            Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Device Installer" "DisableCoInstallers" 1
+
+            Write-Step "Removing Internet Explorer feature..."
+            Get-WindowsCapability -Online -EA SilentlyContinue |
+                Where-Object { $_.Name -like 'Browser.InternetExplorer*' -and $_.State -eq 'Installed' } |
+                ForEach-Object { Remove-WindowsCapability -Online -Name $_.Name -EA SilentlyContinue | Out-Null }
+
+            Write-Done "Extra UI & system tweaks applied"
+            $script:restartReasons += "Extra UI & system tweaks - some take effect after restart"
+        } else {
+            Write-Skip "Skipping extra UI & system tweaks"
+        }
+    }
+}
+
+# Base URL the post-reboot RunOnce re-launch pulls from (from bootstrap.ps1 via
+# -RepoRaw; defaults to main so a direct/clone run still resumes correctly)
+if (-not $RepoRaw) { $RepoRaw = 'https://raw.githubusercontent.com/b-hayes/win11-postinstall/main' }
+
+# Marker that tells a resumed run to do ONLY the deferred steps (set by the pre-update pass)
+$MarkerPath = Join-Path $env:ProgramData 'Win11PostInstall\pending-deferred.flag'
+
 $restartReasons = @()
+
+# ============================================================
+# RESUME MODE - only the deferred steps, nothing from scratch
+# ============================================================
+if (Test-Path $MarkerPath) {
+    Write-Header "Resuming - Deferred Steps"
+    Write-Host "  Finishing the steps that were deferred before your reboot." -ForegroundColor White
+    Invoke-DeferredSteps
+    Remove-Item $MarkerPath -Force -ErrorAction SilentlyContinue
+    Write-Header "All Done"
+    if ($restartReasons.Count -gt 0) {
+        Write-Host "  Some changes need a restart to take full effect:" -ForegroundColor White
+        foreach ($r in $restartReasons) { Write-Host "    - $r" -ForegroundColor Gray }
+    } else {
+        Write-Host "  No restart required." -ForegroundColor Green
+    }
+    Write-Host ""
+    Write-Host "  Run log: $ChoiceLog" -ForegroundColor DarkGray
+    try { Stop-Transcript | Out-Null } catch { }
+    Read-Host "  Press Enter to close this window"
+    return
+}
 
 # ============================================================
 # OVERVIEW
@@ -60,33 +298,71 @@ Write-Host ""
 Write-Host "  [1]  Computer Name        - rename this machine" -ForegroundColor Gray
 Write-Host "  [2]  Telemetry & Privacy  - registry tweaks to kill data collection" -ForegroundColor Gray
 Write-Host "  [3]  Cortana & Web Search - disable Cortana, Start menu web results" -ForegroundColor Gray
-Write-Host "  [3b] Copilot & Recall     - offer to run bin/copilot-removal (Copilot, Recall, reinstall guard)" -ForegroundColor Gray
-Write-Host "  [4]  Win11 Adware Tweaks  - widgets off, Teams chat icon off, tip notifications off" -ForegroundColor Gray
-Write-Host "  [5]  Bloatware Removal    - uninstall built-in Microsoft/third-party apps" -ForegroundColor Gray
+Write-Host "  [3b] Copilot & Recall     - bin/copilot-removal (Copilot + Recall policies, package uninstall)" -ForegroundColor Gray
+Write-Host "  [4]  System Nags & Ads    - bin/nag-removal (SCOOBE, suggestions, lock-screen tips, widgets, search highlights)" -ForegroundColor Gray
+Write-Host "  [4b] Reinstall / Nag Guard - bin/guard: daily task re-applies Copilot + nag removal after updates" -ForegroundColor Gray
+Write-Host "  [4d] Accessibility Prompts- disable Sticky/Filter/Toggle Keys shortcut popups" -ForegroundColor Gray
+Write-Host "  [4e] Windows Update       - P2P LAN-only, no auto-reboot, no silent sign-in, no app relaunch" -ForegroundColor Gray
+Write-Host "  [5]  Bloatware Removal    - bin/debloat (uninstall built-in Microsoft/third-party apps)" -ForegroundColor Gray
 Write-Host "  [6]  Hibernation          - optional: disable hiberfil.sys and reclaim disk space" -ForegroundColor Gray
 Write-Host "  [7]  Locale / Region      - restore your real language, region and timezone" -ForegroundColor Gray
-Write-Host "  [8]  Gaming Performance   - Game Mode, MMCSS, DVR off, FSO off, power plan, HAGS" -ForegroundColor Gray
-Write-Host "  [9]  VBS / HVCI           - optional: disable for 5-10% FPS gain, fixes OC tool compat" -ForegroundColor Gray
+Write-Host "  [8]  Gaming & VBS         - bin/gaming-tweaks (Game Mode, DVR/FSO off, MMCSS, power plan, VBS)" -ForegroundColor Gray
+Write-Host "  [8b] HAGS                 - Hardware-Accelerated GPU Scheduling: ON unlocks DLSS frame gen, OFF cuts input lag" -ForegroundColor Gray
 Write-Host "  [10] Brave Browser        - optional install via winget + set as default browser" -ForegroundColor Gray
+Write-Host "  [10b] Edge De-Nag         - kill Edge first-run splash, recommendations, sidebar, new-tab feed" -ForegroundColor Gray
+Write-Host "  [10c] Remove OneDrive     - fully uninstall OneDrive + remove its Explorer icon" -ForegroundColor Gray
 Write-Host "  [11] Take Ownership Menu  - adds Take Ownership to right-click for files/folders/drives" -ForegroundColor Gray
 Write-Host "  [12] Dark Mode & Appearance - dark mode, accent on taskbar/borders, auto accent from wallpaper" -ForegroundColor Gray
-Write-Host "  [13] Explorer Settings    - hidden files, file extensions, separate process, start at This PC" -ForegroundColor Gray
+Write-Host "  [12b] Theme Schedule     - bin/theme-schedule: auto light/dark by sunrise/sunset or fixed times" -ForegroundColor Gray
+Write-Host "  [13] Explorer Settings   - hidden files, file extensions, separate process, start at This PC" -ForegroundColor Gray
 Write-Host "  [14] Chris Titus WinUtil  - optional interactive tweaks and software install" -ForegroundColor Gray
+Write-Host "  [15] Extra UI & System    - search box, taskbar, transparency, IE removal, misc tweaks" -ForegroundColor Gray
 Write-Host ""
 Write-Host "  Steps already done will be skipped automatically." -ForegroundColor DarkGray
 Write-Host "  A restart will be offered at the end if anything needs it." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  Press any key to begin..." -ForegroundColor Yellow
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+# [Console]::ReadKey, not RawUI.ReadKey: RawUI.ReadKey ignores Enter in Windows
+# Terminal, so 'press any key' looked frozen. This takes any key, Enter included.
+# Read-Host is the fallback for hosts with no console key support (ISE, remoting).
+try { $null = [Console]::ReadKey($true) } catch { $null = Read-Host }
 Write-Host ""
+
+# ============================================================
+# NEW MACHINE / PRE-UPDATE DETECTION
+# ============================================================
+Write-Header "New Machine Check"
+$pendingReboot = Test-PendingReboot
+$updateActive  = Test-UpdateActive
+$preUpdatePass = $false
+if ($pendingReboot -or $updateActive) {
+    Write-Host "  Heads up: Windows Update looks active or a reboot is already pending." -ForegroundColor Yellow
+}
+Write-Host "  On a brand-new install it's best to let Windows Updates fully finish and reboot" -ForegroundColor White
+Write-Host "  BEFORE the flaky steps run - feature updates can re-enable VBS, re-add some apps," -ForegroundColor Gray
+Write-Host "  and bring back the 'finish setting up' nag." -ForegroundColor Gray
+$defaultNew = if ($pendingReboot -or $updateActive) { 'Y/n' } else { 'y/N' }
+$newMachine = Read-Choice "  New machine with Windows Updates not yet finished? [$defaultNew]"
+# Default follows the detection hint: yes when an update/reboot is pending, otherwise no
+$newMachine = if ($newMachine) { $newMachine } elseif ($pendingReboot -or $updateActive) { 'y' } else { 'n' }
+if ($newMachine -match '^[Yy]') {
+    $preUpdatePass = $true
+    Write-Host ""
+    Write-Host "  Pre-update mode: applying only the safe, durable tweaks now and SKIPPING the" -ForegroundColor Cyan
+    Write-Host "  flaky steps (bloatware, Brave, WinUtil, extra UI)." -ForegroundColor Cyan
+    Write-Host "  This menu will re-open automatically after your next reboot to finish them." -ForegroundColor Cyan
+} else {
+    Write-Host "  Full run: all steps offered." -ForegroundColor DarkGray
+}
 
 # ============================================================
 # 1. COMPUTER NAME
 # ============================================================
 Write-Header "Computer Name"
 $currentName = $env:COMPUTERNAME
-Write-Host "  Current name: $currentName" -ForegroundColor DarkGray
-$newName = Read-Host "  Enter new name (1-15 chars, letters/numbers/hyphens), blank = keep"
+Write-Host "  Current name: " -ForegroundColor White -NoNewline
+Write-Host $currentName -ForegroundColor Cyan
+$newName = Read-Choice "  Enter new name (1-15 chars, letters/numbers/hyphens), blank = keep"
 if ($newName -and $newName -ne $currentName) {
     try {
         Rename-Computer -NewName $newName -Force -ErrorAction Stop
@@ -126,14 +402,7 @@ if ($telCheck -eq 0 -and $diagCheck -eq 'Disabled') {
         @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\System",                                                            "UploadUserActivities",                         0),
         # App launch tracking
         @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced",                                           "Start_TrackProgs",                             0),
-        # Start menu suggestions / promoted apps
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager",                                      "SubscribedContent-338388Enabled",              0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager",                                      "SubscribedContent-338389Enabled",              0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager",                                      "SystemPaneSuggestionsEnabled",                 0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager",                                      "SoftLandingEnabled",                           0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager",                                      "SubscribedContent-310093Enabled",              0),
-        # Tailored experiences
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Privacy",                                                     "TailoredExperiencesWithDiagnosticDataEnabled", 0),
+        # (Start menu suggestions / tailored experiences now live in bin/nag-removal.ps1)
         # Error reporting
         @("HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting",                                                    "Disabled",                                     1),
         # Location
@@ -173,13 +442,8 @@ if ($cortanaCheck -eq 0 -and $webCheck -eq 1) {
         @("HKCU:\Software\Microsoft\InputPersonalization",                  "RestrictImplicitInkCollection",  1),
         @("HKCU:\Software\Microsoft\InputPersonalization\TrainedDataStore", "HarvestContacts",                0),
         # Block Bing suggestions in Explorer address bar
-        @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer",             "DisableSearchBoxSuggestions",    1),
-        # Block silent reinstallation of pushed apps
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "SilentInstalledAppsEnabled",  0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "ContentDeliveryAllowed",      0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "OemPreInstalledAppsEnabled",  0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "PreInstalledAppsEnabled",     0),
-        @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "SubscribedContentEnabled",    0)
+        @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer",             "DisableSearchBoxSuggestions",    1)
+        # (Search highlights and pushed-app content-delivery keys now live in bin/nag-removal.ps1)
     )
     Write-Step "Applying registry tweaks..."
     foreach ($t in $cortanaTweaks) { Set-Reg $t[0] $t[1] $t[2] }
@@ -190,16 +454,16 @@ if ($cortanaCheck -eq 0 -and $webCheck -eq 1) {
 # ============================================================
 # 3b. COPILOT & RECALL REMOVAL
 #     Delegated to bin/copilot-removal.ps1 - the single source of truth for
-#     Copilot/Recall policies, package uninstall, and the reinstall guard task.
+#     Copilot/Recall policies and package uninstall. The daily guard (section 4b)
+#     re-applies it after feature updates.
 # ============================================================
 Write-Header "Copilot & Recall Removal"
 $copilotScript = Join-Path $PSScriptRoot "..\..\bin\copilot-removal.ps1"
 if (-not (Test-Path $copilotScript)) {
-    Write-Host "  bin/copilot-removal.ps1 not found next to devtools - skipping" -ForegroundColor Yellow
+    Write-Host "  bin/copilot-removal.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
-    Write-Host "  Runs bin/copilot-removal: removes Copilot and Windows Recall, and can register" -ForegroundColor White
-    Write-Host "  a scheduled task that re-applies removal after feature updates." -ForegroundColor Gray
-    $doCopilot = Read-Host "  Run Copilot & Recall removal now? [Y/n]"
+    Write-Host "  Runs bin/copilot-removal: removes Copilot and Windows Recall." -ForegroundColor White
+    $doCopilot = Read-Choice "  Run Copilot & Recall removal now? [Y/n]"
     if ($doCopilot -notmatch '^[Nn]') {
         # This script already runs elevated, so invoke inline (no re-elevation prompt)
         & $copilotScript
@@ -210,108 +474,90 @@ if (-not (Test-Path $copilotScript)) {
 }
 
 # ============================================================
-# 4. WIN11 ADWARE TWEAKS
+# 4. SYSTEM NAGS & ADS
+#    Delegated to bin/nag-removal.ps1 - the single source of truth for every
+#    nag/ad/suggestion tweak. The daily guard (section 4b) re-applies it.
 # ============================================================
-Write-Header "Windows 11 Adware Tweaks"
-$adwareCheck = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" -Name "AllowNewsAndInterests" -EA SilentlyContinue).AllowNewsAndInterests
-if ($adwareCheck -eq 0) {
-    Write-Skip "Win11 adware tweaks already applied"
+Write-Header "System Nags & Ads"
+$nagScript = Join-Path $PSScriptRoot "..\..\bin\nag-removal.ps1"
+if (-not (Test-Path $nagScript)) {
+    Write-Host "  bin/nag-removal.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
-    Write-Step "Removing adware and telemetry features..."
-    $explorer = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
-
-    # Widgets - news feed sends usage data to Microsoft
-    Set-Reg $explorer "TaskbarDa" 0
-    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" "AllowNewsAndInterests" 0
-
-    # Chat / Teams icon on taskbar - Microsoft pushing their product
-    Set-Reg $explorer "TaskbarMn" 0
-
-    # Tips and suggestions notifications - Microsoft ads in notification area
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-338393Enabled" 0
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-353694Enabled" 0
-    Set-Reg "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager" "SubscribedContent-353696Enabled" 0
-
-    Write-Done "Widgets off, Teams chat icon off, tip notifications off"
-}
-
-# ============================================================
-# 5. BLOATWARE REMOVAL
-# ============================================================
-Write-Header "Removing Built-in Bloatware"
-$bloatCanary = @('Microsoft.BingNews','Microsoft.MicrosoftSolitaireCollection','Clipchamp.Clipchamp','Microsoft.Copilot') |
-    Where-Object { Get-AppxPackage -Name $_ -AllUsers -EA SilentlyContinue }
-if (-not $bloatCanary) {
-    Write-Skip "Bloatware already removed"
-} else {
-    $bloatware = @(
-        # Carried over from Win10
-        "Microsoft.3DBuilder"
-        "Microsoft.BingFinance"
-        "Microsoft.BingNews"
-        "Microsoft.BingSports"
-        "Microsoft.BingWeather"
-        "Microsoft.GetHelp"
-        "Microsoft.Getstarted"
-        "Microsoft.Messaging"
-        "Microsoft.Microsoft3DViewer"
-        "Microsoft.MicrosoftOfficeHub"
-        "Microsoft.MicrosoftSolitaireCollection"
-        "Microsoft.MixedReality.Portal"
-        "Microsoft.NetworkSpeedTest"
-        "Microsoft.News"
-        "Microsoft.Office.Lens"
-        "Microsoft.Office.OneNote"
-        "Microsoft.Office.Sway"
-        "Microsoft.OneConnect"
-        "Microsoft.People"
-        "Microsoft.Print3D"
-        "Microsoft.SkypeApp"
-        "Microsoft.Todos"
-        "Microsoft.WindowsAlarms"
-        "Microsoft.WindowsFeedbackHub"
-        "Microsoft.WindowsMaps"
-        "Microsoft.WindowsSoundRecorder"
-        "Microsoft.ZuneMusic"
-        "Microsoft.ZuneVideo"
-        "MicrosoftTeams"
-        "Microsoft.PowerAutomateDesktop"
-        "Clipchamp.Clipchamp"
-        "king.com.BubbleWitch3Saga"
-        "king.com.CandyCrushSaga"
-        "king.com.CandyCrushSodaSaga"
-        "Disney.37853D22215E2"
-        "SpotifyAB.SpotifyMusic"
-        "TikTok"
-        "Amazon.com.Amazon"
-        # Win11 additions
-        "MicrosoftCorporationII.MicrosoftTeams"   # new Teams app (Win11 24H2)
-        "Microsoft.OutlookForWindows"             # new Outlook
-        "Microsoft.Windows.DevHome"               # Dev Home
-        "Microsoft.BingSearch"                    # Bing search integration
-        "Microsoft.Windows.Ai.Copilot.Provider"   # Copilot provider
-        "Microsoft.549981C3F5F10"                 # Cortana app package
-        "Microsoft.MicrosoftJournal"
-        "Microsoft.Whiteboard"
-        "Microsoft.Copilot"
-    )
-    $provisioned = Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue
-    foreach ($app in $bloatware) {
-        $pkg = Get-AppxPackage -Name $app -AllUsers -ErrorAction SilentlyContinue
-        if ($pkg) {
-            Write-Step "Removing $app"
-            $pkg | Remove-AppxPackage -AllUsers -ErrorAction SilentlyContinue
-        }
-        $prov = $provisioned | Where-Object { $_.DisplayName -eq $app }
-        if ($prov) {
-            # COMException from DISM bypasses -ErrorAction; suppress via $ErrorActionPreference
-            $eap = $ErrorActionPreference; $ErrorActionPreference = 'SilentlyContinue'
-            Remove-AppxProvisionedPackage -Online -PackageName $prov.PackageName | Out-Null
-            $ErrorActionPreference = $eap
-        }
+    Write-Host "  Runs bin/nag-removal: SCOOBE 'finish setting up' page, setup toast, Start" -ForegroundColor White
+    Write-Host "  suggestions/recommendations, OneDrive banners, lock-screen tips (Spotlight" -ForegroundColor Gray
+    Write-Host "  wallpapers kept), widgets, Teams icon, and search highlights." -ForegroundColor Gray
+    $doNags = Read-Choice "  Disable system nags and ads now? [Y/n]"
+    if ($doNags -notmatch '^[Nn]') {
+        # Already elevated - invoke inline (no re-elevation prompt)
+        & $nagScript
+    } else {
+        Write-Skip "Skipping nag removal (run later with: bin/nag-removal)"
     }
-    Write-Done "Bloatware removal complete"
 }
+
+# ============================================================
+# 4b. REINSTALL / NAG GUARD
+#     Delegated to bin/guard.ps1 - one scheduled task that re-runs
+#     copilot-removal and nag-removal after feature updates reset them.
+# ============================================================
+Write-Header "Reinstall / Nag Guard"
+$guardScript = Join-Path $PSScriptRoot "..\..\bin\guard.ps1"
+if (-not (Test-Path $guardScript)) {
+    Write-Host "  bin/guard.ps1 not found - skipping" -ForegroundColor Yellow
+} else {
+    Write-Host "  Feature updates re-add Copilot and reset nag settings. A single scheduled" -ForegroundColor White
+    Write-Host "  task can re-run Copilot and nag removal at logon and daily to keep them gone." -ForegroundColor Gray
+    $doGuard = Read-Choice "  Register the guard task? [Y/n]"
+    if ($doGuard -notmatch '^[Nn]') {
+        & $guardScript -Yes
+    } else {
+        Write-Skip "Skipping guard (register later with: bin/guard)"
+    }
+}
+
+# ============================================================
+# 4d. ACCESSIBILITY SHORTCUT PROMPTS
+# ============================================================
+Write-Header "Accessibility Shortcut Prompts"
+$stickyFlags = (Get-ItemProperty "HKCU:\Control Panel\Accessibility\StickyKeys" -Name "Flags" -EA SilentlyContinue).Flags
+if ($stickyFlags -eq "506") {
+    Write-Skip "Accessibility shortcut prompts already disabled"
+} else {
+    Write-Step "Disabling Sticky / Filter / Toggle Keys activation shortcuts..."
+    # String (REG_SZ) values - Flags with the hotkey/on bits cleared
+    Set-RegStr "HKCU:\Control Panel\Accessibility\StickyKeys"       "Flags" "506"
+    Set-RegStr "HKCU:\Control Panel\Accessibility\ToggleKeys"       "Flags" "58"
+    Set-RegStr "HKCU:\Control Panel\Accessibility\Keyboard Response" "Flags" "122"
+    Write-Done "Sticky Keys (5x Shift), Filter Keys, and Toggle Keys prompts disabled"
+}
+
+# ============================================================
+# 4e. WINDOWS UPDATE BEHAVIOR
+# ============================================================
+Write-Header "Windows Update Behavior"
+$doMode = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" -Name "DODownloadMode" -EA SilentlyContinue).DODownloadMode
+$noReboot = (Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" -Name "NoAutoRebootWithLoggedOnUsers" -EA SilentlyContinue).NoAutoRebootWithLoggedOnUsers
+if ($doMode -eq 1 -and $noReboot -eq 1) {
+    Write-Skip "Update sharing and reboot behavior already set"
+} else {
+    Write-Step "Limiting update P2P sharing to the local network only..."
+    # 1 = peer only on the same NAT/LAN - never uploads to the internet
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization" "DODownloadMode" 1
+
+    Write-Step "Stopping auto-reboots while signed in..."
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU" "NoAutoRebootWithLoggedOnUsers" 1
+
+    Write-Step "Blocking silent auto-sign-in after an update reboot..."
+    # Stops Windows signing you back in overnight to 'finish' an update
+    Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "DisableAutomaticRestartSignOn" 1
+
+    Write-Step "Disabling app relaunch after sign-in..."
+    Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" "RestartApps" 0
+
+    Write-Done "P2P set to LAN-only, no auto-reboots, no silent sign-in, no app relaunch"
+}
+
+# (Bloatware removal is a deferred step - see Invoke-DeferredSteps, run near the end.)
 
 # ============================================================
 # 6. HIBERNATION
@@ -323,7 +569,7 @@ if ($hiberEnabled -eq 0) {
 } else {
     Write-Host "  Disabling hibernation deletes hiberfil.sys, freeing disk space equal to your RAM size." -ForegroundColor White
     Write-Host "  Only useful if you never hibernate or use fast startup." -ForegroundColor DarkGray
-    $disableHiber = Read-Host "  Disable hibernation? [y/N]"
+    $disableHiber = Read-Choice "  Disable hibernation? [y/N]"
     if ($disableHiber -match '^[Yy]') {
         powercfg /h off
         Write-Done "Hibernation disabled"
@@ -359,7 +605,7 @@ if ($currentCulture -ne 'en-001') {
     Write-Host "  13  zh-CN  Chinese Simplified - China"
     Write-Host ""
 
-    $localeInput = Read-Host "  Number from list, or type your own BCP-47 tag (e.g. sv-SE), blank = skip"
+    $localeInput = Read-Choice "  Number from list, or type your own BCP-47 tag (e.g. sv-SE), blank = skip"
 
     $localeMap = @{
         "1"="en-US"; "2"="en-GB";  "3"="en-AU"; "4"="en-CA"; "5"="de-DE";
@@ -431,7 +677,7 @@ if ($currentCulture -ne 'en-001') {
         Write-Host "  Suggested for $locale`: $suggestedTz" -ForegroundColor DarkGray
     }
 
-    $tzInput = Read-Host "  Number from list, or type a Windows timezone ID, blank = skip"
+    $tzInput = Read-Choice "  Number from list, or type a Windows timezone ID, blank = skip"
     if ($tzInput) {
         $tz = if ($tzList.ContainsKey($tzInput)) { $tzList[$tzInput] } else { $tzInput }
         try {
@@ -461,180 +707,124 @@ if ($currentCulture -ne 'en-001') {
 }
 
 # ============================================================
-# 8. GAMING PERFORMANCE
+# 8. GAMING & VBS
+#    Delegated to bin/gaming-tweaks.ps1 - gaming performance tweaks and the
+#    optional VBS/HVCI disable, with their own HAGS/VBS prompts.
 # ============================================================
-Write-Header "Gaming Performance"
-$gameDvr = (Get-ItemProperty "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -EA SilentlyContinue).GameDVR_Enabled
-if ($gameDvr -eq 0) {
-    Write-Skip "Gaming tweaks already applied"
+Write-Header "Gaming & VBS"
+$gamingScript = Join-Path $PSScriptRoot "..\..\bin\gaming-tweaks.ps1"
+if (-not (Test-Path $gamingScript)) {
+    Write-Host "  bin/gaming-tweaks.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
-    Write-Host "  Will apply:" -ForegroundColor White
-    Write-Host "    - Game Mode on" -ForegroundColor Gray
-    Write-Host "    - Game DVR / background recording off" -ForegroundColor Gray
-    Write-Host "    - Fullscreen optimizations off (globally)" -ForegroundColor Gray
-    Write-Host "    - MMCSS: GPU Priority 8, CPU Priority 6, High scheduling category" -ForegroundColor Gray
-    Write-Host "    - CPU scheduler: foreground-boosted quanta (Win32PrioritySeparation 26)" -ForegroundColor Gray
-    Write-Host "    - Power plan: High Performance" -ForegroundColor Gray
-    Write-Host "    - HAGS: will ask separately" -ForegroundColor Gray
-    $doGaming = Read-Host "  Apply gaming performance tweaks? [Y/n]"
+    Write-Host "  Runs bin/gaming-tweaks: Game Mode, DVR/FSO off, MMCSS, power plan, and an" -ForegroundColor White
+    Write-Host "  optional VBS/HVCI disable for a 5-10% FPS gain." -ForegroundColor Gray
+    Write-Host "  HAGS is asked separately in the next step - answering no here does not" -ForegroundColor DarkGray
+    Write-Host "  skip it." -ForegroundColor DarkGray
+    if ($preUpdatePass) {
+        Write-Host "  (Registry-only - safe pre-update; HAGS will take effect on the reboot." -ForegroundColor DarkGray
+        Write-Host "   A later feature upgrade can re-enable VBS - re-run this if so.)" -ForegroundColor DarkGray
+    }
+    $doGaming = Read-Choice "  Run gaming & VBS tweaks now? [Y/n]"
     if ($doGaming -notmatch '^[Nn]') {
-        Write-Step "Enabling Game Mode..."
-        Set-Reg "HKCU:\Software\Microsoft\GameBar" "AutoGameModeEnabled" 1
-        Set-Reg "HKCU:\Software\Microsoft\GameBar" "AllowAutoGameMode"   1
+        # Already elevated - invoke inline (no re-elevation prompt). The module asks
+        # about HAGS itself, so the separate step below is skipped.
+        & $gamingScript
+        $hagsAsked = $true
+        $restartReasons += "Gaming / VBS tweaks - HAGS and VBS changes take effect after restart"
+    } else {
+        Write-Skip "Skipping gaming & VBS tweaks (run later with: bin/gaming-tweaks)"
+    }
+}
 
-        Write-Step "Disabling Game DVR background recording..."
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_Enabled" 0
-        Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR" "AllowGameDVR" 0
-        Set-Reg "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\GameDVR" "AppCaptureEnabled" 0
+# ============================================================
+# 8b. HAGS
+#     Its own step on purpose: it is a hard requirement for frame generation and
+#     turning it off is what fixes input lag/stutter, so it must be answerable
+#     without accepting (or declining) everything else in the gaming step.
+# ============================================================
+if (-not $hagsAsked) {
+    Write-Header "Hardware-Accelerated GPU Scheduling (HAGS)"
+    if (-not (Test-Path $gamingScript)) {
+        Write-Host "  bin/gaming-tweaks.ps1 not found - skipping" -ForegroundColor Yellow
+    } else {
+        & $gamingScript -HagsOnly
+    }
+}
 
-        Write-Step "Disabling fullscreen optimizations globally..."
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_FSEBehaviorMode"               2
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_HonorUserFSEBehaviorMode"      1
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_FSEBehavior"                   2
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_DXGIHonorFSEWindowsCompatible" 1
-        Set-Reg "HKCU:\System\GameConfigStore" "GameDVR_EFSEBehaviorMode"              2
+# (Brave install is a deferred step - see Invoke-DeferredSteps, run near the end.)
 
-        Write-Step "Applying MMCSS game scheduling priority..."
-        $mmcss      = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile"
-        $mmcssGames = "$mmcss\Tasks\Games"
-        Set-ItemProperty -Path $mmcss -Name "NetworkThrottlingIndex" -Value 0xffffffff -Type DWord -Force
-        Set-Reg    $mmcss "SystemResponsiveness" 10
-        if (-not (Test-Path $mmcssGames)) { New-Item -Path $mmcssGames -Force | Out-Null }
-        Set-Reg    $mmcssGames "GPU Priority" 8
-        Set-Reg    $mmcssGames "Priority"     6
-        Set-RegStr $mmcssGames "Scheduling Category" "High"
-        Set-RegStr $mmcssGames "SFIO Priority"       "High"
+# ============================================================
+# 10b. MICROSOFT EDGE DE-NAG
+# ============================================================
+Write-Header "Microsoft Edge De-Nag"
+$edgePol = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+$edgeCheck = (Get-ItemProperty $edgePol -Name "HideFirstRunExperience" -EA SilentlyContinue).HideFirstRunExperience
+if ($edgeCheck -eq 1) {
+    Write-Skip "Edge nag screens already suppressed"
+} else {
+    Write-Step "Suppressing Edge first-run, recommendations, sidebar, and new-tab clutter..."
+    $edgeTweaks = @(
+        @($edgePol, "HideFirstRunExperience",                 1),  # no first-run splash
+        @($edgePol, "ShowRecommendationsEnabled",              0),  # no 'recommended' nags
+        @($edgePol, "SpotlightExperiencesAndRecommendationsEnabled", 0),
+        @($edgePol, "StartupBoostEnabled",                     0),  # no background preload
+        @($edgePol, "BackgroundModeEnabled",                   0),  # don't keep running after close
+        @($edgePol, "HubsSidebarEnabled",                      0),  # no sidebar
+        @($edgePol, "WebWidgetAllowed",                        0),  # no Edge bar widget
+        @($edgePol, "EdgeShoppingAssistantEnabled",            0),
+        @($edgePol, "ShowMicrosoftRewards",                    0),
+        @($edgePol, "PersonalizationReportingEnabled",         0),
+        @($edgePol, "NewTabPageContentEnabled",                0),  # no news feed on new tab
+        @($edgePol, "NewTabPageQuickLinksEnabled",             0),
+        @($edgePol, "DefaultBrowserSettingEnabled",            0)   # no 'make Edge default' nag
+    )
+    foreach ($t in $edgeTweaks) { Set-Reg $t[0] $t[1] $t[2] }
+    Write-Done "Edge nag screens and clutter suppressed"
+}
 
-        Write-Step "Setting CPU scheduler to foreground-boosted quanta..."
-        Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl" "Win32PrioritySeparation" 26
+# ============================================================
+# 10c. REMOVE ONEDRIVE
+#      Delegated to bin/remove-onedrive.ps1. Default yes, but flipped to no with a
+#      warning when OneDrive looks signed in and actively syncing.
+# ============================================================
+Write-Header "Remove OneDrive"
+$onedriveScript = Join-Path $PSScriptRoot "..\..\bin\remove-onedrive.ps1"
+if (-not (Test-Path $onedriveScript)) {
+    Write-Host "  bin/remove-onedrive.ps1 not found - skipping" -ForegroundColor Yellow
+} else {
+    Write-Host "  Fully uninstall OneDrive and remove its File Explorer icon." -ForegroundColor White
+    Write-Host "  Your OneDrive folder and its files stay on disk either way." -ForegroundColor DarkGray
 
-        Write-Step "Setting High Performance power plan..."
-        powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
-
+    # In use = signed in (a configured account with a synced folder) and/or running
+    $odRunning  = [bool](Get-Process OneDrive -ErrorAction SilentlyContinue)
+    $odAccounts = @(Get-ChildItem "HKCU:\Software\Microsoft\OneDrive\Accounts" -ErrorAction SilentlyContinue |
+                    Where-Object { (Get-ItemProperty $_.PSPath -Name UserFolder -EA SilentlyContinue).UserFolder })
+    $odInUse    = $odRunning -or ($odAccounts.Count -gt 0)
+    if ($odInUse) {
         Write-Host ""
-        Write-Host "  Hardware-Accelerated GPU Scheduling (HAGS):" -ForegroundColor White
-        $hagsVal   = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -EA SilentlyContinue).HwSchMode
-        $hagsState = if ($hagsVal -eq 2) { "ENABLED" } elseif ($hagsVal -eq 1) { "DISABLED" } else { "not explicitly set" }
-        Write-Host "  Current state: $hagsState" -ForegroundColor $(if ($hagsVal -eq 2) { 'Green' } elseif ($hagsVal -eq 1) { 'Yellow' } else { 'DarkGray' })
-        Write-Host "  - RTX 40/50 series : turn ON - DLSS frame generation is a hard requirement" -ForegroundColor Gray
-        Write-Host "  - RTX 20/30 series : turn OFF - DLSS frame gen unavailable, HAGS costs ~1GB VRAM" -ForegroundColor Gray
-        Write-Host "  - AMD RX 9000      : ON recommended (general best practice on RDNA 4)" -ForegroundColor Gray
-        Write-Host "  - AMD RX 6000/7000 : OFF - FSR 3/4 and AFMF don't require it, saves VRAM" -ForegroundColor Gray
-        Write-Host "  Note: DLSS/FSR upscaling works on all supported cards regardless of HAGS" -ForegroundColor DarkGray
-        $hags = Read-Host "  Enable HAGS? [Y/n]"
-        if ($hags -notmatch '^[Nn]') {
-            Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" "HwSchMode" 2
-            Write-Done "HAGS enabled"
-        } else {
-            Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" "HwSchMode" 1
-            Write-Done "HAGS disabled"
-        }
-        $restartReasons += "HAGS setting changed - takes effect after restart"
-
-        Write-Done "Gaming performance tweaks applied"
-    } else {
-        Write-Skip "Skipping gaming tweaks"
-    }
-}
-
-# ============================================================
-# 9. VBS / HVCI
-# ============================================================
-Write-Header "Virtualization Based Security (VBS / HVCI)"
-$vbsVal  = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard" -Name "EnableVirtualizationBasedSecurity" -EA SilentlyContinue).EnableVirtualizationBasedSecurity
-$hvciVal = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -Name "Enabled" -EA SilentlyContinue).Enabled
-if ($vbsVal -eq 0 -and $hvciVal -eq 0) {
-    Write-Skip "VBS/HVCI already disabled"
-} else {
-    Write-Host "  VBS adds a hypervisor layer for security but costs 5-10% average FPS," -ForegroundColor White
-    Write-Host "  up to 15% on 1% lows in CPU-bound games. It also blocks kernel drivers" -ForegroundColor White
-    Write-Host "  used by overclocking tools like MSI Afterburner, HWiNFO64, and XTU." -ForegroundColor White
-    Write-Host "  On a home gaming PC the security trade-off is generally not worth it." -ForegroundColor DarkGray
-    $vbsState = if ($vbsVal -eq $null) { "unknown (check Windows Security > Device Security)" } else { "ENABLED" }
-    Write-Host "  Current state: $vbsState" -ForegroundColor Yellow
-    $disableVbs = Read-Host "  Disable VBS/HVCI? [Y/n]"
-    if ($disableVbs -notmatch '^[Nn]') {
-        Write-Step "Disabling VBS / HVCI..."
-        $dg   = "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard"
-        $hvci = "$dg\Scenarios\HypervisorEnforcedCodeIntegrity"
-        $ks   = "$dg\Scenarios\KernelShadowStacks"
-        Set-Reg $dg   "EnableVirtualizationBasedSecurity"  0
-        Set-Reg $dg   "RequirePlatformSecurityFeatures"    0
-        Set-Reg $hvci "Enabled"                            0
-        Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa"            "LsaCfgFlags" 0
-        Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeviceGuard" "LsaCfgFlags" 0
-        if (Test-Path $ks) { Set-Reg $ks "Enabled" 0 }
-        Write-Done "VBS/HVCI disabled"
-        $restartReasons += "VBS / Memory Integrity disabled - takes effect after restart"
-    } else {
-        Write-Skip "VBS/HVCI left enabled"
-    }
-}
-
-# ============================================================
-# 10. BRAVE BROWSER
-# ============================================================
-Write-Header "Brave Browser"
-$braveExe = "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"
-if (Test-Path $braveExe) {
-    Write-Skip "Brave already installed"
-} else {
-    $installBrave = Read-Host "  Install Brave Browser? [Y/n]"
-    if ($installBrave -notmatch '^[Nn]') {
-        if (Get-Command winget -ErrorAction SilentlyContinue) {
-            Write-Step "Checking internet connection..."
-            $hasInternet = Test-Internet
-            if (-not $hasInternet) {
-                Write-Host "  No internet detected - connect first, then re-run this step." -ForegroundColor Yellow
-                Write-Host "  Manual install: winget install --id Brave.Brave" -ForegroundColor DarkGray
-            } else {
-                Write-Step "Resetting winget sources..."
-                winget source reset --force 2>&1 | Out-Null
-                Write-Step "Installing Brave via winget..."
-                winget install --id Brave.Brave -e --source winget `
-                      --accept-package-agreements --accept-source-agreements
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Done "Brave installed"
-                } else {
-                    Write-Host "  winget install failed (exit $LASTEXITCODE) - download from brave.com" -ForegroundColor Yellow
-                }
-
-                $setDefault = Read-Host "  Set Brave as default browser? [Y/n]"
-                if ($setDefault -notmatch '^[Nn]') {
-                    Write-Step "Suppressing Edge default-browser nag (policy key)..."
-                    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "DefaultBrowserSettingEnabled" 0
-
-                    Write-Step "Bootstrapping NuGet and installing PS-SFTA..."
-                    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -Scope CurrentUser -ErrorAction SilentlyContinue | Out-Null
-                    if (-not (Get-PSRepository -Name PSGallery -EA SilentlyContinue)) {
-                        Register-PSRepository -Default -ErrorAction SilentlyContinue | Out-Null
-                    }
-                    Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction SilentlyContinue
-                    Install-Module -Name PS-SFTA -Scope CurrentUser -Force -AllowClobber -Repository PSGallery -ErrorAction SilentlyContinue
-
-                    if (Get-Module -ListAvailable -Name PS-SFTA) {
-                        Import-Module PS-SFTA
-                        Write-Step "Writing UserChoice associations for Brave..."
-                        Set-PTA -ProgId BraveHTML -Protocol http
-                        Set-PTA -ProgId BraveHTML -Protocol https
-                        Set-FTA -ProgId BraveHTML -Extension .html
-                        Set-FTA -ProgId BraveHTML -Extension .htm
-                        Write-Done "Brave is now the default browser - Edge nag suppressed"
-                    } else {
-                        Write-Host "  PS-SFTA could not be installed." -ForegroundColor Yellow
-                        Write-Host "  Opening Default Apps - select Brave Browser and click Set default." -ForegroundColor White
-                        Start-Process "ms-settings:defaultapps"
-                    }
-                } else {
-                    Write-Skip "Skipping default browser change"
-                }
+        Write-Host "  [!] ONEDRIVE IS IN USE ON THIS ACCOUNT." -ForegroundColor Red
+        if ($odRunning)            { Write-Host "      OneDrive is running right now." -ForegroundColor Red }
+        if ($odAccounts.Count -gt 0) {
+            foreach ($a in $odAccounts) {
+                $folder = (Get-ItemProperty $a.PSPath -Name UserFolder -EA SilentlyContinue).UserFolder
+                $email  = (Get-ItemProperty $a.PSPath -Name UserEmail  -EA SilentlyContinue).UserEmail
+                $who    = if ($email) { $email } else { Split-Path $a.PSPath -Leaf }
+                Write-Host "      Signed in: $who -> $folder" -ForegroundColor Red
             }
-        } else {
-            Write-Host "  winget not found. Download Brave manually from brave.com" -ForegroundColor Yellow
         }
+        Write-Host "      Removing it will stop syncing. Check your files are uploaded or" -ForegroundColor Red
+        Write-Host "      downloaded locally first - cloud-only files will not be there." -ForegroundColor Red
+        Write-Host ""
+    }
+    $odDefault  = if ($odInUse) { 'y/N' } else { 'Y/n' }
+    $doOneDrive = Read-Choice "  Remove OneDrive completely? [$odDefault]"
+    # Default follows the detection: no when OneDrive is in use, yes otherwise
+    $removeOd = if ($doOneDrive) { $doOneDrive -match '^[Yy]' } else { -not $odInUse }
+    if ($removeOd) {
+        # Already elevated - invoke inline, pass -Yes (user already confirmed here)
+        & $onedriveScript -Yes
     } else {
-        Write-Skip "Skipping Brave"
+        Write-Skip "Leaving OneDrive installed (run later with: bin/remove-onedrive)"
     }
 }
 
@@ -650,7 +840,7 @@ if ($takeOwnKey) {
 } else {
     Write-Host "  Adds 'Take Ownership' to the right-click menu for files, folders, and drives." -ForegroundColor White
     Write-Host "  Useful when Windows treats your other drives as belonging to a previous install." -ForegroundColor DarkGray
-    $addTakeOwn = Read-Host "  Add to context menu? [Y/n]"
+    $addTakeOwn = Read-Choice "  Add to context menu? [Y/n]"
     if ($addTakeOwn -notmatch '^[Nn]') {
         Write-Step "Writing registry entries..."
 
@@ -700,7 +890,7 @@ if ($tp.AppsUseLightTheme -eq 0 -and $tp.SystemUsesLightTheme -eq 0 -and
     Write-Host "    - Accent color on taskbar and Start: On" -ForegroundColor Gray
     Write-Host "    - Accent color on title bars and borders: On" -ForegroundColor Gray
     Write-Host "    - Accent colour source: automatically picked from wallpaper" -ForegroundColor Gray
-    $doDark = Read-Host "  Set Brad's dark mode settings? [Y/n]"
+    $doDark = Read-Choice "  Apply these appearance settings? [Y/n]"
     if ($doDark -notmatch '^[Nn]') {
         Write-Step "Enabling dark mode for Windows and apps..."
         Set-Reg $themes "AppsUseLightTheme"    0
@@ -720,6 +910,20 @@ if ($tp.AppsUseLightTheme -eq 0 -and $tp.SystemUsesLightTheme -eq 0 -and
 }
 
 # ============================================================
+# 12b. LIGHT / DARK THEME SCHEDULE
+#      Delegated to bin/theme-schedule.ps1 - registers the per-user daily tasks.
+# ============================================================
+Write-Header "Light / Dark Theme Schedule"
+$themeScript = Join-Path $PSScriptRoot "..\..\bin\theme-schedule.ps1"
+if (-not (Test-Path $themeScript)) {
+    Write-Host "  bin/theme-schedule.ps1 not found - skipping" -ForegroundColor Yellow
+} else {
+    # One question only - the module's own sun/fixed/skip prompt. No pre-question
+    # here and no confirmation after it, or this gets asked three times over.
+    & $themeScript -NoConfirm
+}
+
+# ============================================================
 # 13. EXPLORER SETTINGS
 # ============================================================
 Write-Header "Explorer Settings"
@@ -733,7 +937,7 @@ if ($ap.Hidden -eq 1 -and $ap.HideFileExt -eq 0 -and $ap.SeparateProcess -eq 1 -
     Write-Host "    - Show file extensions: On" -ForegroundColor Gray
     Write-Host "    - Launch folder windows in a separate process: On" -ForegroundColor Gray
     Write-Host "    - Open Explorer to: This PC (not Quick Access)" -ForegroundColor Gray
-    $doExplorer = Read-Host "  Apply Explorer settings? [Y/n]"
+    $doExplorer = Read-Choice "  Apply Explorer settings? [Y/n]"
     if ($doExplorer -notmatch '^[Nn]') {
         Write-Step "Show hidden files and folders..."
         Set-Reg $adv "Hidden" 1
@@ -758,33 +962,53 @@ if ($ap.Hidden -eq 1 -and $ap.HideFileExt -eq 0 -and $ap.SeparateProcess -eq 1 -
     }
 }
 
+# (WinUtil and Extra UI & System Tweaks are deferred steps - see Invoke-DeferredSteps below.)
+
 # ============================================================
-# 14. CHRIS TITUS TECH WINUTIL
+# DEFERRED STEPS (full run only; pre-update defers them to the post-reboot resume)
 # ============================================================
-Write-Header "Chris Titus Tech WinUtil"
-Write-Host "  WinUtil is an interactive GUI for tweaks, debloating, and software install." -ForegroundColor White
-Write-Host "  It opens in its own window - close it when done and come back here." -ForegroundColor DarkGray
-$runCTT = Read-Host "  Launch WinUtil now? [y/N]"
-if ($runCTT -match '^[Yy]') {
-    Write-Step "Launching WinUtil (requires internet)..."
-    Start-Process powershell.exe `
-        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"irm christitus.com/win | iex`"" `
-        -Verb RunAs -Wait
-    Write-Done "WinUtil closed"
-} else {
-    Write-Skip "Skipping WinUtil"
-    Write-Host "  Run it later with:  irm christitus.com/win | iex" -ForegroundColor DarkGray
-}
+if (-not $preUpdatePass) { Invoke-DeferredSteps }
 
 # ============================================================
 # FINISH
 # ============================================================
 Write-Header "All Done"
+
+if ($preUpdatePass) {
+    # Drop the marker so the next run does ONLY the deferred steps (not the whole menu)
+    $markerDir = Split-Path $MarkerPath -Parent
+    if (-not (Test-Path $markerDir)) { New-Item -Path $markerDir -ItemType Directory -Force | Out-Null }
+    Set-Content -Path $MarkerPath -Value (Get-Date).ToString('o') -Force
+
+    # Register the resume so the menu re-opens once, after whatever reboot YOU choose
+    $ro = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
+    if (-not (Test-Path $ro)) { New-Item -Path $ro -Force | Out-Null }
+    $resumeCmd = "powershell -NoProfile -ExecutionPolicy Bypass -Command `"`$RepoRaw='$RepoRaw'; irm `$RepoRaw/bootstrap.ps1 | iex`""
+    Set-ItemProperty $ro -Name "Win11PostInstallResume" -Value $resumeCmd -Force
+
+    Write-Host ""
+    Write-Host "  PRE-UPDATE STEPS DONE." -ForegroundColor Green
+    Write-Host "    Applied now : privacy, Copilot/Recall, nags/ads, gaming/VBS, daily guard" -ForegroundColor Gray
+    Write-Host "    After reboot: bloatware, Brave, WinUtil, extra UI (this menu re-opens for them)" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  This script will NOT reboot or close on its own." -ForegroundColor Yellow
+    Write-Host "  A pending reboot does NOT mean Windows is finished - it may still be" -ForegroundColor Yellow
+    Write-Host "  downloading or staging more updates. Let Windows Update fully settle, then" -ForegroundColor Yellow
+    Write-Host "  reboot whenever YOU are ready. The menu re-opens automatically afterwards" -ForegroundColor Yellow
+    Write-Host "  (one UAC prompt, needs internet) to finish the remaining steps." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  (Nothing else happens here - this window just waits so you can read the above.)" -ForegroundColor DarkGray
+    Write-Host "  Run log: $ChoiceLog" -ForegroundColor DarkGray
+    try { Stop-Transcript | Out-Null } catch { }
+    Read-Host "  Press Enter to close this window"
+    return
+}
+
 if ($restartReasons.Count -gt 0) {
     Write-Host "  The following changes require a restart to take full effect:" -ForegroundColor White
     foreach ($r in $restartReasons) { Write-Host "    - $r" -ForegroundColor Gray }
     Write-Host ""
-    $restart = Read-Host "  Restart now? [y/N]"
+    $restart = Read-Choice "  Restart now? [y/N]"
     if ($restart -match '^[Yy]') {
         Restart-Computer -Force
     } else {
@@ -799,3 +1023,9 @@ Write-Host "  Reminder:" -ForegroundColor White
 Write-Host "  If you have drives from a previous Windows install, they may show as" -ForegroundColor Gray
 Write-Host "  inaccessible or locked. Right-click each drive in Explorer and select" -ForegroundColor Gray
 Write-Host "  'Take Ownership' to reclaim full access." -ForegroundColor Gray
+
+Write-Host ""
+Write-Host "  Run log:" -ForegroundColor White
+Write-Host "    Choices    : $ChoiceLog" -ForegroundColor Gray
+Write-Host "    Transcript : $Transcript" -ForegroundColor Gray
+try { Stop-Transcript | Out-Null } catch { }

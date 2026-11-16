@@ -1,21 +1,19 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Remove Microsoft Copilot and Windows Recall, and stop Windows re-installing them.
+    Remove Microsoft Copilot and Windows Recall.
 
 .DESCRIPTION
     Applies the current (2026) supported policies to disable and remove Copilot, disables
-    Windows Recall (periodic screen snapshots), uninstalls the Copilot Appx packages, and
-    optionally registers a scheduled task that re-applies the removal after feature updates
-    (Windows re-adds Copilot on major updates).
+    Windows Recall (periodic screen snapshots), and uninstalls the Copilot Appx packages.
+
+    Windows re-adds Copilot on major feature updates - the shared guard (bin/guard.ps1)
+    re-runs this script to keep it gone.
 
     Safe to re-run - every step is idempotent and skips work already done.
 
 .PARAMETER Yes
-    Accept all prompts (non-interactive). Registers the scheduled recheck task without asking.
-
-.PARAMETER Unregister
-    Remove the scheduled recheck task and exit. Does not undo the policies.
+    Accept all prompts (non-interactive). Used by the scheduled guard.
 
 .PARAMETER Help
     Show this usage and exit.
@@ -24,41 +22,20 @@
     .\copilot-removal.ps1
 .EXAMPLE
     .\copilot-removal.ps1 -Yes
-.EXAMPLE
-    .\copilot-removal.ps1 -Unregister
 #>
 param(
     [switch]$Yes,
-    [switch]$Unregister,
     [switch]$Help
 )
 
 $ErrorActionPreference = 'Continue'
 
-$TaskName    = 'DevtoolsCopilotRemoval'
-$InstallDir  = "$env:ProgramData\Win11PostInstall"
-$InstalledScript = Join-Path $InstallDir 'copilot-removal.ps1'
-
-# Copilot packages to remove (source of truth, reused by the scheduled task)
+# Copilot packages to remove
 $CopilotPackages = @(
     'Microsoft.Copilot'
     'Microsoft.Windows.Ai.Copilot.Provider'
     'Microsoft.BingSearch'
 )
-
-function Show-Usage {
-    Write-Host ""
-    Write-Host "  copilot-removal - remove Copilot and Recall, block reinstall" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "  Usage: copilot-removal [-Yes] [-Unregister] [-Help]" -ForegroundColor White
-    Write-Host ""
-    Write-Host "    -Yes         Accept all prompts (non-interactive)" -ForegroundColor Gray
-    Write-Host "    -Unregister  Remove the scheduled recheck task and exit" -ForegroundColor Gray
-    Write-Host "    -Help        Show this help and exit" -ForegroundColor Gray
-    Write-Host ""
-}
-
-if ($Help) { Show-Usage; return }
 
 function Write-Header { param([string]$Text)
     Write-Host ""
@@ -88,20 +65,25 @@ function Set-Reg {
     }
 }
 
-function Confirm-Default-Yes {
-    param([string]$Prompt)
-    if ($Yes) { return $true }
-    $ans = Read-Host "  $Prompt [Y/n]"
-    return ($ans -notmatch '^[Nn]')
+if ($Help) {
+    Write-Host ""
+    Write-Host "  copilot-removal - remove Copilot and Recall" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Usage: copilot-removal [-Yes] [-Help]" -ForegroundColor White
+    Write-Host ""
+    Write-Host "    -Yes   Accept all prompts (non-interactive)" -ForegroundColor Gray
+    Write-Host "    -Help  Show this help and exit" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  Re-apply automatically after feature updates with: guard" -ForegroundColor DarkGray
+    Write-Host ""
+    return
 }
 
 # Self-elevate: relaunch as admin if we are not already (git bash launches without elevation)
 if (-not (Test-Admin)) {
     Write-Warn "Administrator rights required - relaunching elevated..."
-    # -NoExit keeps the elevated window open so the user can read the output (never hide runs)
     $argList = @('-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-File', "`"$PSCommandPath`"")
-    if ($Yes)        { $argList += '-Yes' }
-    if ($Unregister) { $argList += '-Unregister' }
+    if ($Yes) { $argList += '-Yes' }
     try {
         Start-Process powershell.exe -Verb RunAs -ArgumentList $argList
     } catch {
@@ -111,22 +93,17 @@ if (-not (Test-Admin)) {
 }
 
 # ============================================================
-# UNREGISTER MODE
-# ============================================================
-if ($Unregister) {
-    Write-Header "Remove Scheduled Recheck Task"
-    if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-        Write-Done "Scheduled task '$TaskName' removed"
-    } else {
-        Write-Skip "No scheduled task '$TaskName' found"
-    }
-    return
-}
-
-# ============================================================
 # 1. COPILOT POLICIES
 # ============================================================
+# Tracks whether this run actually changed anything, so we only recommend a restart
+# (and only say "removed") when there was real work - the daily guard run stays quiet.
+$changed = $false
+function Apply-Reg {
+    param([string]$Path, [string]$Name, [int]$Value)
+    $cur = (Get-ItemProperty -Path $Path -Name $Name -ErrorAction SilentlyContinue).$Name
+    if ($cur -ne $Value) { Set-Reg $Path $Name $Value; $script:changed = $true }
+}
+
 Write-Header "Copilot Policies"
 $copilotTweaks = @(
     # New official removal policy - April 2026 update (KB5083769, build 26200.8246).
@@ -146,14 +123,16 @@ $copilotTweaks = @(
     @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "PreInstalledAppsEnabled",    0),
     @("HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager", "OemPreInstalledAppsEnabled", 0)
 )
-Write-Step "Applying registry policies..."
-foreach ($t in $copilotTweaks) { Set-Reg $t[0] $t[1] $t[2] }
+foreach ($t in $copilotTweaks) { Apply-Reg $t[0] $t[1] $t[2] }
 
-Write-Step "Blocking Ask Copilot context menu entry..."
 $blocked = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked"
-if (-not (Test-Path $blocked)) { New-Item -Path $blocked -Force | Out-Null }
-New-ItemProperty -Path $blocked -Name "{CB3B0003-8088-4EDE-8769-8B354AB2FF8C}" -PropertyType String -Value "" -Force | Out-Null
-Write-Done "Copilot policies applied"
+$ctxKey  = "{CB3B0003-8088-4EDE-8769-8B354AB2FF8C}"
+if ((Get-ItemProperty -Path $blocked -Name $ctxKey -ErrorAction SilentlyContinue).$ctxKey -eq $null) {
+    if (-not (Test-Path $blocked)) { New-Item -Path $blocked -Force | Out-Null }
+    New-ItemProperty -Path $blocked -Name $ctxKey -PropertyType String -Value "" -Force | Out-Null
+    $changed = $true
+}
+if ($changed) { Write-Done "Copilot policies applied" } else { Write-Skip "Copilot policies already set" }
 
 # ============================================================
 # 2. WINDOWS RECALL / AI SCREEN SNAPSHOTS
@@ -165,22 +144,21 @@ $recallTweaks = @(
     @("HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsAI", "TurnOffSavingSnapshots", 1),
     @("HKCU:\Software\Policies\Microsoft\Windows\WindowsAI", "TurnOffSavingSnapshots", 1)
 )
-Write-Step "Disabling Recall snapshots via policy..."
-foreach ($t in $recallTweaks) { Set-Reg $t[0] $t[1] $t[2] }
+foreach ($t in $recallTweaks) { Apply-Reg $t[0] $t[1] $t[2] }
 
-Write-Step "Removing the Recall optional feature (if present)..."
-try {
-    Disable-WindowsOptionalFeature -Online -FeatureName "Recall" -NoRestart -ErrorAction Stop | Out-Null
+# Only disable the optional feature if it is currently enabled (avoids daily churn)
+$recallFeat = Get-WindowsOptionalFeature -Online -ErrorAction SilentlyContinue |
+    Where-Object { $_.FeatureName -like '*Recall*' -and $_.State -eq 'Enabled' }
+if ($recallFeat) {
+    Write-Step "Removing the Recall optional feature..."
+    $eap = $ErrorActionPreference; $ErrorActionPreference = 'SilentlyContinue'
+    Disable-WindowsOptionalFeature -Online -FeatureName $recallFeat.FeatureName -NoRestart | Out-Null
+    $ErrorActionPreference = $eap
+    $changed = $true
     Write-Done "Recall optional feature disabled"
-} catch {
-    try {
-        Disable-WindowsOptionalFeature -Online -FeatureName "Microsoft-Windows-Recall" -NoRestart -ErrorAction Stop | Out-Null
-        Write-Done "Recall optional feature disabled"
-    } catch {
-        Write-Skip "Recall optional feature not present on this build"
-    }
+} else {
+    Write-Skip "Recall already disabled"
 }
-Write-Done "Recall disabled"
 
 # ============================================================
 # 3. UNINSTALL COPILOT PACKAGES
@@ -204,48 +182,15 @@ foreach ($app in $CopilotPackages) {
         $removedAny = $true
     }
 }
-if ($removedAny) { Write-Done "Copilot packages removed" } else { Write-Skip "No Copilot packages installed" }
-
-# ============================================================
-# 4. SCHEDULED RECHECK (reinstall guard)
-# ============================================================
-Write-Header "Reinstall Guard (Scheduled Recheck)"
-if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-    Write-Skip "Scheduled recheck task '$TaskName' already registered"
-} else {
-    Write-Host "  Windows re-adds Copilot on major feature updates. A scheduled task can" -ForegroundColor Cyan
-    Write-Host "  re-run this removal at logon and daily to keep it gone." -ForegroundColor Cyan
-    Write-Host "  It runs in a VISIBLE window that stays open so you can read the result." -ForegroundColor Cyan
-    if (Confirm-Default-Yes "Register the scheduled recheck task?") {
-        Write-Step "Installing script to $InstallDir..."
-        if (-not (Test-Path $InstallDir)) { New-Item -Path $InstallDir -ItemType Directory -Force | Out-Null }
-        Copy-Item -Path $PSCommandPath -Destination $InstalledScript -Force
-
-        Write-Step "Registering scheduled task '$TaskName'..."
-        # Runs as the interactive user with highest privileges (NOT hidden SYSTEM) so the
-        # window is visible on the desktop. -NoExit keeps it open until the user closes it,
-        # so a success or failure is always seen - never hide a run.
-        $action    = New-ScheduledTaskAction -Execute 'powershell.exe' `
-                        -Argument "-NoProfile -ExecutionPolicy Bypass -NoExit -File `"$InstalledScript`" -Yes"
-        $triggers  = @(
-            (New-ScheduledTaskTrigger -AtLogOn),
-            (New-ScheduledTaskTrigger -Daily -At 9am)
-        )
-        $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
-                        -LogonType Interactive -RunLevel Highest
-        $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
-                        -DontStopIfGoingOnBatteries
-        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
-            -Principal $principal -Settings $settings -Force | Out-Null
-        Write-Done "Scheduled recheck registered (remove later with: copilot-removal -Unregister)"
-    } else {
-        Write-Skip "Skipping scheduled recheck"
-    }
-}
+if ($removedAny) { Write-Done "Copilot packages removed"; $changed = $true } else { Write-Skip "No Copilot packages installed" }
 
 Write-Header "Done"
-Write-Host "  Copilot and Recall removed. A restart is recommended for policy changes to" -ForegroundColor Green
-Write-Host "  fully take effect." -ForegroundColor Green
+if ($changed) {
+    Write-Host "  Copilot/Recall removed or policies (re)applied. A restart is recommended" -ForegroundColor Green
+    Write-Host "  for the changes to fully take effect." -ForegroundColor Green
+} else {
+    Write-Host "  Copilot and Recall were already gone - nothing changed, no restart needed." -ForegroundColor Green
+}
 Write-Host ""
-Write-Host "  Finished - you can close this window." -ForegroundColor Cyan
+Write-Host "  To keep this applied after feature updates, register the guard: guard" -ForegroundColor DarkGray
 Write-Host ""
