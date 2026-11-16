@@ -114,7 +114,11 @@ $nagTweaks = @(
     # --- Start menu "recommendations" (recently added / promoted content) ---
     @($ADV, "Start_IrisRecommendations",       0),
     # --- Lock screen tips overlay (Spotlight wallpaper rotation intentionally left on) ---
+    # Both keys are needed: the overlay key stops it being drawn, 338387 turns off the
+    # content subscription feeding it ("get fun facts, tips, tricks and more"), which
+    # otherwise brings it back when Spotlight refreshes.
     @($CDM, "RotatingLockScreenOverlayEnabled", 0),
+    @($CDM, "SubscribedContent-338387Enabled",  0),
     # --- Widgets (news feed) and Teams chat icon on the taskbar ---
     @($ADV, "TaskbarDa", 0),
     @($ADV, "TaskbarMn", 0),
