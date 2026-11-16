@@ -18,11 +18,6 @@ Elevated PowerShell:
 irm https://raw.githubusercontent.com/b-hayes/win11-postinstall/main/bootstrap.ps1 | iex
 ```
 
-<!-- TODO: remove this block before merging - test command for the nag-removal-and-remote-testing branch -->
-```powershell
-$RepoRaw='https://raw.githubusercontent.com/b-hayes/win11-postinstall/nag-removal-and-remote-testing'; irm $RepoRaw/bootstrap.ps1 | iex
-```
-
 The bootstrap self-elevates, downloads the scripts, and launches the menu.
 
 ## New machine flow
