@@ -18,6 +18,28 @@ function Write-Header {
     Write-Host "  $Text" -ForegroundColor Cyan
     Write-Host ("=" * 50) -ForegroundColor Cyan
 }
+# ------------------------------------------------------------
+# RUN LOG
+# Every prompt and answer goes to a tab-separated choices file, and the whole
+# session to a transcript, so a run can be reviewed (or diffed) afterwards.
+# ------------------------------------------------------------
+$LogDir    = Join-Path $env:ProgramData 'Win11PostInstall\logs'
+$RunStamp  = (Get-Date).ToString('yyyyMMdd-HHmmss')
+$ChoiceLog = Join-Path $LogDir "choices-$RunStamp.tsv"
+$Transcript = Join-Path $LogDir "transcript-$RunStamp.log"
+if (-not (Test-Path $LogDir)) { New-Item -Path $LogDir -ItemType Directory -Force | Out-Null }
+Set-Content -Path $ChoiceLog -Value "time`tprompt`tanswer" -Encoding UTF8
+try { Start-Transcript -Path $Transcript -Force | Out-Null } catch { }
+
+# Read-Host, but the prompt and what you typed are recorded
+function Read-Choice {
+    param([string]$Prompt)
+    $answer = Read-Host $Prompt
+    $line = "{0}`t{1}`t{2}" -f (Get-Date -Format 'HH:mm:ss'), $Prompt.Trim(), $answer
+    Add-Content -Path $ChoiceLog -Value $line -Encoding UTF8
+    return $answer
+}
+
 function Write-Step { param([string]$T); Write-Host "  [*] $T" -ForegroundColor Yellow }
 function Write-Done { param([string]$T); Write-Host "  [+] $T" -ForegroundColor Green }
 function Write-Skip { param([string]$T); Write-Host "  [-] $T" -ForegroundColor DarkGray }
@@ -74,7 +96,7 @@ function Invoke-DeferredSteps {
         Write-Host "  bin/debloat.ps1 not found - skipping" -ForegroundColor Yellow
     } else {
         Write-Host "  Runs bin/debloat: uninstalls built-in and pushed Microsoft/third-party apps." -ForegroundColor White
-        $doDebloat = Read-Host "  Remove bloatware now? [Y/n]"
+        $doDebloat = Read-Choice "  Remove bloatware now? [Y/n]"
         if ($doDebloat -notmatch '^[Nn]') {
             & $debloatScript -Yes
         } else {
@@ -84,11 +106,19 @@ function Invoke-DeferredSteps {
 
     # --- Brave Browser ---
     Write-Header "Brave Browser"
-    $braveExe = "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"
-    if (Test-Path $braveExe) {
-        Write-Skip "Brave already installed"
+    # Brave installs per-machine OR per-user, so check all three locations - only
+    # looking in Program Files makes a per-user install invisible and winget then
+    # fails trying to install over it.
+    $braveExes = @(
+        "$env:ProgramFiles\BraveSoftware\Brave-Browser\Applicationrave.exe"
+        "${env:ProgramFiles(x86)}\BraveSoftware\Brave-Browser\Applicationrave.exe"
+        "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Applicationrave.exe"
+    )
+    $braveExe = $braveExes | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($braveExe) {
+        Write-Skip "Brave already installed ($braveExe)"
     } else {
-        $installBrave = Read-Host "  Install Brave Browser? [Y/n]"
+        $installBrave = Read-Choice "  Install Brave Browser? [Y/n]"
         if ($installBrave -notmatch '^[Nn]') {
             if (Get-Command winget -ErrorAction SilentlyContinue) {
                 Write-Step "Checking internet connection..."
@@ -104,10 +134,22 @@ function Invoke-DeferredSteps {
                     if ($LASTEXITCODE -eq 0) {
                         Write-Done "Brave installed"
                     } else {
-                        Write-Host "  winget install failed (exit $LASTEXITCODE) - download from brave.com" -ForegroundColor Yellow
+                        Write-Host "  winget install failed (exit $LASTEXITCODE)" -ForegroundColor Yellow
+                        if ($braveExes | Where-Object { Test-Path $_ }) {
+                            Write-Host "  Brave is in fact installed - winget just could not manage it." -ForegroundColor Gray
+                        } else {
+                            Write-Host "  Download it from brave.com instead." -ForegroundColor Gray
+                        }
                     }
 
-                    $setDefault = Read-Host "  Set Brave as default browser? [Y/n]"
+                    Write-Host ""
+                    Write-Host "  [!] THIS NEEDS MANUAL CLICKS." -ForegroundColor Red
+                    Write-Host "      Windows Settings will open on Default apps. Windows only lets a" -ForegroundColor Yellow
+                    Write-Host "      script set some associations, so Edge keeps handling the rest" -ForegroundColor Yellow
+                    Write-Host "      (PDF, .html files, some link types) until you change them there" -ForegroundColor Yellow
+                    Write-Host "      by hand. Set Brave as default, then work down the file types." -ForegroundColor Yellow
+                    Write-Host ""
+                    $setDefault = Read-Choice "  Set Brave as default browser? [Y/n]"
                     if ($setDefault -notmatch '^[Nn]') {
                         Write-Step "Suppressing Edge default-browser nag (policy key)..."
                         Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Edge" "DefaultBrowserSettingEnabled" 0
@@ -150,7 +192,7 @@ function Invoke-DeferredSteps {
     Write-Header "Chris Titus Tech WinUtil"
     Write-Host "  WinUtil is an interactive GUI for tweaks, debloating, and software install." -ForegroundColor White
     Write-Host "  It opens in its own window - close it when done and come back here." -ForegroundColor DarkGray
-    $runCTT = Read-Host "  Launch WinUtil now? [y/N]"
+    $runCTT = Read-Choice "  Launch WinUtil now? [y/N]"
     if ($runCTT -match '^[Yy]') {
         Write-Step "Launching WinUtil (requires internet)..."
         Start-Process powershell.exe `
@@ -176,7 +218,7 @@ function Invoke-DeferredSteps {
     if ($searchBox -eq 0) {
         Write-Skip "Extra UI & system tweaks already applied"
     } else {
-        $doExtra = Read-Host "  Apply these tweaks? [y/N]"
+        $doExtra = Read-Choice "  Apply these tweaks? [y/N]"
         if ($doExtra -match '^[Yy]') {
             $adv = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
 
@@ -237,6 +279,8 @@ if (Test-Path $MarkerPath) {
         Write-Host "  No restart required." -ForegroundColor Green
     }
     Write-Host ""
+    Write-Host "  Run log: $ChoiceLog" -ForegroundColor DarkGray
+    try { Stop-Transcript | Out-Null } catch { }
     Read-Host "  Press Enter to close this window"
     return
 }
@@ -262,13 +306,15 @@ Write-Host "  [4e] Windows Update       - P2P LAN-only, no auto-reboot, no silen
 Write-Host "  [5]  Bloatware Removal    - bin/debloat (uninstall built-in Microsoft/third-party apps)" -ForegroundColor Gray
 Write-Host "  [6]  Hibernation          - optional: disable hiberfil.sys and reclaim disk space" -ForegroundColor Gray
 Write-Host "  [7]  Locale / Region      - restore your real language, region and timezone" -ForegroundColor Gray
-Write-Host "  [8]  Gaming & VBS         - bin/gaming-tweaks (Game Mode, DVR/FSO off, MMCSS, power plan, HAGS, VBS)" -ForegroundColor Gray
+Write-Host "  [8]  Gaming & VBS         - bin/gaming-tweaks (Game Mode, DVR/FSO off, MMCSS, power plan, VBS)" -ForegroundColor Gray
+Write-Host "  [8b] HAGS                 - Hardware-Accelerated GPU Scheduling: ON unlocks DLSS frame gen, OFF cuts input lag" -ForegroundColor Gray
 Write-Host "  [10] Brave Browser        - optional install via winget + set as default browser" -ForegroundColor Gray
 Write-Host "  [10b] Edge De-Nag         - kill Edge first-run splash, recommendations, sidebar, new-tab feed" -ForegroundColor Gray
-Write-Host "  [10c] Remove OneDrive     - optional: fully uninstall OneDrive + remove its Explorer icon" -ForegroundColor Gray
+Write-Host "  [10c] Remove OneDrive     - fully uninstall OneDrive + remove its Explorer icon" -ForegroundColor Gray
 Write-Host "  [11] Take Ownership Menu  - adds Take Ownership to right-click for files/folders/drives" -ForegroundColor Gray
 Write-Host "  [12] Dark Mode & Appearance - dark mode, accent on taskbar/borders, auto accent from wallpaper" -ForegroundColor Gray
-Write-Host "  [13] Explorer Settings    - hidden files, file extensions, separate process, start at This PC" -ForegroundColor Gray
+Write-Host "  [12b] Theme Schedule     - bin/theme-schedule: auto light/dark by sunrise/sunset or fixed times" -ForegroundColor Gray
+Write-Host "  [13] Explorer Settings   - hidden files, file extensions, separate process, start at This PC" -ForegroundColor Gray
 Write-Host "  [14] Chris Titus WinUtil  - optional interactive tweaks and software install" -ForegroundColor Gray
 Write-Host "  [15] Extra UI & System    - search box, taskbar, transparency, IE removal, misc tweaks" -ForegroundColor Gray
 Write-Host ""
@@ -276,7 +322,10 @@ Write-Host "  Steps already done will be skipped automatically." -ForegroundColo
 Write-Host "  A restart will be offered at the end if anything needs it." -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  Press any key to begin..." -ForegroundColor Yellow
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+# [Console]::ReadKey, not RawUI.ReadKey: RawUI.ReadKey ignores Enter in Windows
+# Terminal, so 'press any key' looked frozen. This takes any key, Enter included.
+# Read-Host is the fallback for hosts with no console key support (ISE, remoting).
+try { $null = [Console]::ReadKey($true) } catch { $null = Read-Host }
 Write-Host ""
 
 # ============================================================
@@ -293,7 +342,7 @@ Write-Host "  On a brand-new install it's best to let Windows Updates fully fini
 Write-Host "  BEFORE the flaky steps run - feature updates can re-enable VBS, re-add some apps," -ForegroundColor Gray
 Write-Host "  and bring back the 'finish setting up' nag." -ForegroundColor Gray
 $defaultNew = if ($pendingReboot -or $updateActive) { 'Y/n' } else { 'y/N' }
-$newMachine = Read-Host "  New machine with Windows Updates not yet finished? [$defaultNew]"
+$newMachine = Read-Choice "  New machine with Windows Updates not yet finished? [$defaultNew]"
 # Default follows the detection hint: yes when an update/reboot is pending, otherwise no
 $newMachine = if ($newMachine) { $newMachine } elseif ($pendingReboot -or $updateActive) { 'y' } else { 'n' }
 if ($newMachine -match '^[Yy]') {
@@ -311,8 +360,9 @@ if ($newMachine -match '^[Yy]') {
 # ============================================================
 Write-Header "Computer Name"
 $currentName = $env:COMPUTERNAME
-Write-Host "  Current name: $currentName" -ForegroundColor DarkGray
-$newName = Read-Host "  Enter new name (1-15 chars, letters/numbers/hyphens), blank = keep"
+Write-Host "  Current name: " -ForegroundColor White -NoNewline
+Write-Host $currentName -ForegroundColor Cyan
+$newName = Read-Choice "  Enter new name (1-15 chars, letters/numbers/hyphens), blank = keep"
 if ($newName -and $newName -ne $currentName) {
     try {
         Rename-Computer -NewName $newName -Force -ErrorAction Stop
@@ -413,7 +463,7 @@ if (-not (Test-Path $copilotScript)) {
     Write-Host "  bin/copilot-removal.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
     Write-Host "  Runs bin/copilot-removal: removes Copilot and Windows Recall." -ForegroundColor White
-    $doCopilot = Read-Host "  Run Copilot & Recall removal now? [Y/n]"
+    $doCopilot = Read-Choice "  Run Copilot & Recall removal now? [Y/n]"
     if ($doCopilot -notmatch '^[Nn]') {
         # This script already runs elevated, so invoke inline (no re-elevation prompt)
         & $copilotScript
@@ -436,7 +486,7 @@ if (-not (Test-Path $nagScript)) {
     Write-Host "  Runs bin/nag-removal: SCOOBE 'finish setting up' page, setup toast, Start" -ForegroundColor White
     Write-Host "  suggestions/recommendations, OneDrive banners, lock-screen tips (Spotlight" -ForegroundColor Gray
     Write-Host "  wallpapers kept), widgets, Teams icon, and search highlights." -ForegroundColor Gray
-    $doNags = Read-Host "  Disable system nags and ads now? [Y/n]"
+    $doNags = Read-Choice "  Disable system nags and ads now? [Y/n]"
     if ($doNags -notmatch '^[Nn]') {
         # Already elevated - invoke inline (no re-elevation prompt)
         & $nagScript
@@ -457,7 +507,7 @@ if (-not (Test-Path $guardScript)) {
 } else {
     Write-Host "  Feature updates re-add Copilot and reset nag settings. A single scheduled" -ForegroundColor White
     Write-Host "  task can re-run Copilot and nag removal at logon and daily to keep them gone." -ForegroundColor Gray
-    $doGuard = Read-Host "  Register the guard task? [Y/n]"
+    $doGuard = Read-Choice "  Register the guard task? [Y/n]"
     if ($doGuard -notmatch '^[Nn]') {
         & $guardScript -Yes
     } else {
@@ -519,7 +569,7 @@ if ($hiberEnabled -eq 0) {
 } else {
     Write-Host "  Disabling hibernation deletes hiberfil.sys, freeing disk space equal to your RAM size." -ForegroundColor White
     Write-Host "  Only useful if you never hibernate or use fast startup." -ForegroundColor DarkGray
-    $disableHiber = Read-Host "  Disable hibernation? [y/N]"
+    $disableHiber = Read-Choice "  Disable hibernation? [y/N]"
     if ($disableHiber -match '^[Yy]') {
         powercfg /h off
         Write-Done "Hibernation disabled"
@@ -555,7 +605,7 @@ if ($currentCulture -ne 'en-001') {
     Write-Host "  13  zh-CN  Chinese Simplified - China"
     Write-Host ""
 
-    $localeInput = Read-Host "  Number from list, or type your own BCP-47 tag (e.g. sv-SE), blank = skip"
+    $localeInput = Read-Choice "  Number from list, or type your own BCP-47 tag (e.g. sv-SE), blank = skip"
 
     $localeMap = @{
         "1"="en-US"; "2"="en-GB";  "3"="en-AU"; "4"="en-CA"; "5"="de-DE";
@@ -627,7 +677,7 @@ if ($currentCulture -ne 'en-001') {
         Write-Host "  Suggested for $locale`: $suggestedTz" -ForegroundColor DarkGray
     }
 
-    $tzInput = Read-Host "  Number from list, or type a Windows timezone ID, blank = skip"
+    $tzInput = Read-Choice "  Number from list, or type a Windows timezone ID, blank = skip"
     if ($tzInput) {
         $tz = if ($tzList.ContainsKey($tzInput)) { $tzList[$tzInput] } else { $tzInput }
         try {
@@ -666,19 +716,38 @@ $gamingScript = Join-Path $PSScriptRoot "..\..\bin\gaming-tweaks.ps1"
 if (-not (Test-Path $gamingScript)) {
     Write-Host "  bin/gaming-tweaks.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
-    Write-Host "  Runs bin/gaming-tweaks: Game Mode, DVR/FSO off, MMCSS, power plan, HAGS," -ForegroundColor White
-    Write-Host "  and an optional VBS/HVCI disable for a 5-10% FPS gain." -ForegroundColor Gray
+    Write-Host "  Runs bin/gaming-tweaks: Game Mode, DVR/FSO off, MMCSS, power plan, and an" -ForegroundColor White
+    Write-Host "  optional VBS/HVCI disable for a 5-10% FPS gain." -ForegroundColor Gray
+    Write-Host "  HAGS is asked separately in the next step - answering no here does not" -ForegroundColor DarkGray
+    Write-Host "  skip it." -ForegroundColor DarkGray
     if ($preUpdatePass) {
         Write-Host "  (Registry-only - safe pre-update; HAGS will take effect on the reboot." -ForegroundColor DarkGray
         Write-Host "   A later feature upgrade can re-enable VBS - re-run this if so.)" -ForegroundColor DarkGray
     }
-    $doGaming = Read-Host "  Run gaming & VBS tweaks now? [Y/n]"
+    $doGaming = Read-Choice "  Run gaming & VBS tweaks now? [Y/n]"
     if ($doGaming -notmatch '^[Nn]') {
-        # Already elevated - invoke inline (no re-elevation prompt)
+        # Already elevated - invoke inline (no re-elevation prompt). The module asks
+        # about HAGS itself, so the separate step below is skipped.
         & $gamingScript
+        $hagsAsked = $true
         $restartReasons += "Gaming / VBS tweaks - HAGS and VBS changes take effect after restart"
     } else {
         Write-Skip "Skipping gaming & VBS tweaks (run later with: bin/gaming-tweaks)"
+    }
+}
+
+# ============================================================
+# 8b. HAGS
+#     Its own step on purpose: it is a hard requirement for frame generation and
+#     turning it off is what fixes input lag/stutter, so it must be answerable
+#     without accepting (or declining) everything else in the gaming step.
+# ============================================================
+if (-not $hagsAsked) {
+    Write-Header "Hardware-Accelerated GPU Scheduling (HAGS)"
+    if (-not (Test-Path $gamingScript)) {
+        Write-Host "  bin/gaming-tweaks.ps1 not found - skipping" -ForegroundColor Yellow
+    } else {
+        & $gamingScript -HagsOnly
     }
 }
 
@@ -714,18 +783,44 @@ if ($edgeCheck -eq 1) {
 }
 
 # ============================================================
-# 10c. REMOVE ONEDRIVE (optional)
-#      Delegated to bin/remove-onedrive.ps1 - opt-in, destructive for OneDrive users.
+# 10c. REMOVE ONEDRIVE
+#      Delegated to bin/remove-onedrive.ps1. Default yes, but flipped to no with a
+#      warning when OneDrive looks signed in and actively syncing.
 # ============================================================
 Write-Header "Remove OneDrive"
 $onedriveScript = Join-Path $PSScriptRoot "..\..\bin\remove-onedrive.ps1"
 if (-not (Test-Path $onedriveScript)) {
     Write-Host "  bin/remove-onedrive.ps1 not found - skipping" -ForegroundColor Yellow
 } else {
-    Write-Host "  Optional: fully uninstall OneDrive and remove its File Explorer icon." -ForegroundColor White
-    Write-Host "  Only for people who don't use OneDrive. Your OneDrive folder stays untouched." -ForegroundColor DarkGray
-    $doOneDrive = Read-Host "  Remove OneDrive completely? [y/N]"
-    if ($doOneDrive -match '^[Yy]') {
+    Write-Host "  Fully uninstall OneDrive and remove its File Explorer icon." -ForegroundColor White
+    Write-Host "  Your OneDrive folder and its files stay on disk either way." -ForegroundColor DarkGray
+
+    # In use = signed in (a configured account with a synced folder) and/or running
+    $odRunning  = [bool](Get-Process OneDrive -ErrorAction SilentlyContinue)
+    $odAccounts = @(Get-ChildItem "HKCU:\Software\Microsoft\OneDrive\Accounts" -ErrorAction SilentlyContinue |
+                    Where-Object { (Get-ItemProperty $_.PSPath -Name UserFolder -EA SilentlyContinue).UserFolder })
+    $odInUse    = $odRunning -or ($odAccounts.Count -gt 0)
+    if ($odInUse) {
+        Write-Host ""
+        Write-Host "  [!] ONEDRIVE IS IN USE ON THIS ACCOUNT." -ForegroundColor Red
+        if ($odRunning)            { Write-Host "      OneDrive is running right now." -ForegroundColor Red }
+        if ($odAccounts.Count -gt 0) {
+            foreach ($a in $odAccounts) {
+                $folder = (Get-ItemProperty $a.PSPath -Name UserFolder -EA SilentlyContinue).UserFolder
+                $email  = (Get-ItemProperty $a.PSPath -Name UserEmail  -EA SilentlyContinue).UserEmail
+                $who    = if ($email) { $email } else { Split-Path $a.PSPath -Leaf }
+                Write-Host "      Signed in: $who -> $folder" -ForegroundColor Red
+            }
+        }
+        Write-Host "      Removing it will stop syncing. Check your files are uploaded or" -ForegroundColor Red
+        Write-Host "      downloaded locally first - cloud-only files will not be there." -ForegroundColor Red
+        Write-Host ""
+    }
+    $odDefault  = if ($odInUse) { 'y/N' } else { 'Y/n' }
+    $doOneDrive = Read-Choice "  Remove OneDrive completely? [$odDefault]"
+    # Default follows the detection: no when OneDrive is in use, yes otherwise
+    $removeOd = if ($doOneDrive) { $doOneDrive -match '^[Yy]' } else { -not $odInUse }
+    if ($removeOd) {
         # Already elevated - invoke inline, pass -Yes (user already confirmed here)
         & $onedriveScript -Yes
     } else {
@@ -745,7 +840,7 @@ if ($takeOwnKey) {
 } else {
     Write-Host "  Adds 'Take Ownership' to the right-click menu for files, folders, and drives." -ForegroundColor White
     Write-Host "  Useful when Windows treats your other drives as belonging to a previous install." -ForegroundColor DarkGray
-    $addTakeOwn = Read-Host "  Add to context menu? [Y/n]"
+    $addTakeOwn = Read-Choice "  Add to context menu? [Y/n]"
     if ($addTakeOwn -notmatch '^[Nn]') {
         Write-Step "Writing registry entries..."
 
@@ -795,7 +890,7 @@ if ($tp.AppsUseLightTheme -eq 0 -and $tp.SystemUsesLightTheme -eq 0 -and
     Write-Host "    - Accent color on taskbar and Start: On" -ForegroundColor Gray
     Write-Host "    - Accent color on title bars and borders: On" -ForegroundColor Gray
     Write-Host "    - Accent colour source: automatically picked from wallpaper" -ForegroundColor Gray
-    $doDark = Read-Host "  Set Brad's dark mode settings? [Y/n]"
+    $doDark = Read-Choice "  Apply these appearance settings? [Y/n]"
     if ($doDark -notmatch '^[Nn]') {
         Write-Step "Enabling dark mode for Windows and apps..."
         Set-Reg $themes "AppsUseLightTheme"    0
@@ -815,6 +910,20 @@ if ($tp.AppsUseLightTheme -eq 0 -and $tp.SystemUsesLightTheme -eq 0 -and
 }
 
 # ============================================================
+# 12b. LIGHT / DARK THEME SCHEDULE
+#      Delegated to bin/theme-schedule.ps1 - registers the per-user daily tasks.
+# ============================================================
+Write-Header "Light / Dark Theme Schedule"
+$themeScript = Join-Path $PSScriptRoot "..\..\bin\theme-schedule.ps1"
+if (-not (Test-Path $themeScript)) {
+    Write-Host "  bin/theme-schedule.ps1 not found - skipping" -ForegroundColor Yellow
+} else {
+    # One question only - the module's own sun/fixed/skip prompt. No pre-question
+    # here and no confirmation after it, or this gets asked three times over.
+    & $themeScript -NoConfirm
+}
+
+# ============================================================
 # 13. EXPLORER SETTINGS
 # ============================================================
 Write-Header "Explorer Settings"
@@ -828,7 +937,7 @@ if ($ap.Hidden -eq 1 -and $ap.HideFileExt -eq 0 -and $ap.SeparateProcess -eq 1 -
     Write-Host "    - Show file extensions: On" -ForegroundColor Gray
     Write-Host "    - Launch folder windows in a separate process: On" -ForegroundColor Gray
     Write-Host "    - Open Explorer to: This PC (not Quick Access)" -ForegroundColor Gray
-    $doExplorer = Read-Host "  Apply Explorer settings? [Y/n]"
+    $doExplorer = Read-Choice "  Apply Explorer settings? [Y/n]"
     if ($doExplorer -notmatch '^[Nn]') {
         Write-Step "Show hidden files and folders..."
         Set-Reg $adv "Hidden" 1
@@ -889,6 +998,8 @@ if ($preUpdatePass) {
     Write-Host "  (one UAC prompt, needs internet) to finish the remaining steps." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  (Nothing else happens here - this window just waits so you can read the above.)" -ForegroundColor DarkGray
+    Write-Host "  Run log: $ChoiceLog" -ForegroundColor DarkGray
+    try { Stop-Transcript | Out-Null } catch { }
     Read-Host "  Press Enter to close this window"
     return
 }
@@ -897,7 +1008,7 @@ if ($restartReasons.Count -gt 0) {
     Write-Host "  The following changes require a restart to take full effect:" -ForegroundColor White
     foreach ($r in $restartReasons) { Write-Host "    - $r" -ForegroundColor Gray }
     Write-Host ""
-    $restart = Read-Host "  Restart now? [y/N]"
+    $restart = Read-Choice "  Restart now? [y/N]"
     if ($restart -match '^[Yy]') {
         Restart-Computer -Force
     } else {
@@ -912,3 +1023,9 @@ Write-Host "  Reminder:" -ForegroundColor White
 Write-Host "  If you have drives from a previous Windows install, they may show as" -ForegroundColor Gray
 Write-Host "  inaccessible or locked. Right-click each drive in Explorer and select" -ForegroundColor Gray
 Write-Host "  'Take Ownership' to reclaim full access." -ForegroundColor Gray
+
+Write-Host ""
+Write-Host "  Run log:" -ForegroundColor White
+Write-Host "    Choices    : $ChoiceLog" -ForegroundColor Gray
+Write-Host "    Transcript : $Transcript" -ForegroundColor Gray
+try { Stop-Transcript | Out-Null } catch { }

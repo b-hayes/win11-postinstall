@@ -42,7 +42,8 @@ $files = @(
     'bin/gaming-tweaks.ps1',
     'bin/debloat.ps1',
     'bin/guard.ps1',
-    'bin/remove-onedrive.ps1'
+    'bin/remove-onedrive.ps1',
+    'bin/theme-schedule.ps1'
 )
 
 foreach ($f in $files) {

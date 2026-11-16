@@ -17,11 +17,15 @@
     Accept all prompts (non-interactive): applies gaming tweaks, enables HAGS,
     and disables VBS/HVCI.
 
+.PARAMETER HagsOnly
+    Only ask the HAGS question (skip the gaming tweaks and the VBS/HVCI section).
+
 .PARAMETER Help
     Show usage and exit.
 #>
 param(
     [switch]$Yes,
+    [switch]$HagsOnly,
     [switch]$Help
 )
 
@@ -78,7 +82,8 @@ if ($Help) {
     Write-Host ""
     Write-Host "  Usage: gaming-tweaks [-Yes] [-Help]" -ForegroundColor White
     Write-Host ""
-    Write-Host "    -Yes   Accept all prompts (applies tweaks, enables HAGS, disables VBS/HVCI)" -ForegroundColor Gray
+    Write-Host "    -Yes       Accept all prompts (applies tweaks, enables HAGS, disables VBS/HVCI)" -ForegroundColor Gray
+    Write-Host "    -HagsOnly  Ask only about HAGS, nothing else" -ForegroundColor Gray
     Write-Host "    -Help  Show this help and exit" -ForegroundColor Gray
     Write-Host ""
     return
@@ -88,7 +93,8 @@ if ($Help) {
 if (-not (Test-Admin)) {
     Write-Warn "Administrator rights required - relaunching elevated..."
     $argList = @('-NoProfile','-ExecutionPolicy','Bypass','-NoExit','-File', "`"$PSCommandPath`"")
-    if ($Yes) { $argList += '-Yes' }
+    if ($Yes)      { $argList += '-Yes' }
+    if ($HagsOnly) { $argList += '-HagsOnly' }
     try {
         Start-Process powershell.exe -Verb RunAs -ArgumentList $argList
     } catch {
@@ -102,6 +108,7 @@ $restartNeeded = $false
 # ============================================================
 # GAMING PERFORMANCE
 # ============================================================
+if (-not $HagsOnly) {
 Write-Header "Gaming Performance"
 $gameDvr = (Get-ItemProperty "HKCU:\System\GameConfigStore" -Name "GameDVR_Enabled" -EA SilentlyContinue).GameDVR_Enabled
 if ($gameDvr -eq 0) {
@@ -114,7 +121,7 @@ if ($gameDvr -eq 0) {
     Write-Host "    - MMCSS: GPU Priority 8, CPU Priority 6, High scheduling category" -ForegroundColor Gray
     Write-Host "    - CPU scheduler: foreground-boosted quanta (Win32PrioritySeparation 26)" -ForegroundColor Gray
     Write-Host "    - Power plan: High Performance" -ForegroundColor Gray
-    Write-Host "    - HAGS: will ask separately" -ForegroundColor Gray
+    Write-Host "    (HAGS is asked separately - it is not part of this step)" -ForegroundColor DarkGray
     if (Confirm-Default-Yes "Apply gaming performance tweaks?") {
         Write-Step "Enabling Game Mode..."
         Set-Reg "HKCU:\Software\Microsoft\GameBar" "AutoGameModeEnabled" 1
@@ -149,28 +156,61 @@ if ($gameDvr -eq 0) {
         Write-Step "Setting High Performance power plan..."
         powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c
 
-        Write-Host ""
-        Write-Host "  Hardware-Accelerated GPU Scheduling (HAGS):" -ForegroundColor White
-        $hagsVal   = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" -Name "HwSchMode" -EA SilentlyContinue).HwSchMode
-        $hagsState = if ($hagsVal -eq 2) { "ENABLED" } elseif ($hagsVal -eq 1) { "DISABLED" } else { "not explicitly set" }
-        Write-Host "  Current state: $hagsState" -ForegroundColor $(if ($hagsVal -eq 2) { 'Green' } elseif ($hagsVal -eq 1) { 'Yellow' } else { 'DarkGray' })
-        Write-Host "  - RTX 40/50 series : turn ON - DLSS frame generation is a hard requirement" -ForegroundColor Gray
-        Write-Host "  - RTX 20/30 series : turn OFF - DLSS frame gen unavailable, HAGS costs ~1GB VRAM" -ForegroundColor Gray
-        Write-Host "  - AMD RX 9000      : ON recommended (general best practice on RDNA 4)" -ForegroundColor Gray
-        Write-Host "  - AMD RX 6000/7000 : OFF - FSR 3/4 and AFMF don't require it, saves VRAM" -ForegroundColor Gray
-        Write-Host "  Note: DLSS/FSR upscaling works on all supported cards regardless of HAGS" -ForegroundColor DarkGray
-        if (Confirm-Default-Yes "Enable HAGS?") {
-            Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" "HwSchMode" 2
-            Write-Done "HAGS enabled"
-        } else {
-            Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers" "HwSchMode" 1
-            Write-Done "HAGS disabled"
-        }
         $restartNeeded = $true
         Write-Done "Gaming performance tweaks applied"
     } else {
         Write-Skip "Skipping gaming tweaks"
     }
+}
+}
+
+# ============================================================
+# HAGS - deliberately its own question. It is very specific, it is a hard
+# requirement for DLSS/FSR frame generation, and turning it off is what fixes
+# input lag and stutter for everyone who does not use frame gen. Nobody should
+# have to accept the other gaming tweaks to answer it, or vice versa.
+# ============================================================
+Write-Header "Hardware-Accelerated GPU Scheduling (HAGS)"
+$hagsKey   = "HKLM:\SYSTEM\CurrentControlSet\Control\GraphicsDrivers"
+$hagsVal   = (Get-ItemProperty $hagsKey -Name "HwSchMode" -EA SilentlyContinue).HwSchMode
+$hagsState = if ($hagsVal -eq 2) { "ENABLED" } elseif ($hagsVal -eq 1) { "DISABLED" } else { "not explicitly set" }
+Write-Host "  Current state: $hagsState" -ForegroundColor $(if ($hagsVal -eq 2) { 'Green' } elseif ($hagsVal -eq 1) { 'Yellow' } else { 'DarkGray' })
+Write-Host ""
+Write-Host "  Hardware-Accelerated GPU Scheduling (HAGS) hands scheduling of GPU work to" -ForegroundColor White
+Write-Host "  the GPU itself instead of the CPU. That gives the GPU better frame timing" -ForegroundColor White
+Write-Host "  and unlocks DLSS frame generation, at the cost of input latency and stutter." -ForegroundColor White
+Write-Host ""
+Write-Host "  Turn it OFF if your mouse, keyboard or headset input drops out" -ForegroundColor White
+Write-Host "  intermittently. With it off the whole OS feels more responsive to input" -ForegroundColor White
+Write-Host "  instead of waiting on the GPU." -ForegroundColor White
+Write-Host ""
+Write-Host "  - Nvidia DLSS frame generation : needs it ON. Hard requirement, any RTX 40/50" -ForegroundColor Gray
+Write-Host "  - AMD FSR frame generation     : works fine with it OFF. AMD only recommends" -ForegroundColor Gray
+Write-Host "                                   HAGS, so some games grey the option out" -ForegroundColor Gray
+Write-Host "                                   without it (e.g. Cyberpunk 2077)" -ForegroundColor Gray
+Write-Host "  - No frame gen at all          : OFF. Nothing to gain, and it costs ~1GB VRAM" -ForegroundColor Gray
+Write-Host "  Upscaling (DLSS/FSR/XeSS) works either way - this only affects frame gen." -ForegroundColor DarkGray
+if (Confirm-Default-Yes "Enable HAGS?") {
+    if ($hagsVal -eq 2) {
+        Write-Skip "HAGS already enabled"
+    } else {
+        Set-Reg $hagsKey "HwSchMode" 2
+        Write-Done "HAGS enabled"
+        $restartNeeded = $true
+    }
+} else {
+    if ($hagsVal -eq 1) {
+        Write-Skip "HAGS already disabled"
+    } else {
+        Set-Reg $hagsKey "HwSchMode" 1
+        Write-Done "HAGS disabled"
+        $restartNeeded = $true
+    }
+}
+
+if ($HagsOnly) {
+    if ($restartNeeded) { Write-Warn "A restart is required for the HAGS change to take effect." }
+    return
 }
 
 # ============================================================
