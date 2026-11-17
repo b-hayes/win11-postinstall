@@ -755,8 +755,20 @@ if ($Apply) {
     $db = if ($null -ne $cfg.DarkBefore) { [int]$cfg.DarkBefore } else { 0 }
     $la = if ($null -ne $cfg.LightAfter) { [int]$cfg.LightAfter } else { 0 }
     $light = Test-DaylightNow -Lat ([double]$cfg.Latitude) -Lon ([double]$cfg.Longitude) -DarkBefore $db -LightAfter $la
-    Set-Theme -Light $light
-    Write-Done ("Theme set to " + $(if ($light) { 'light' } else { 'dark' }))
+
+    # Only assert the theme when the sun has actually crossed a boundary (sunrise or
+    # sunset) since the last check. Between boundaries, leave whatever theme is set,
+    # so a manual flip during the day or night is respected until the next natural
+    # change. A missed switch (sleep, powered off over the boundary) still corrects
+    # itself, because the stored 'desired' state won't match and counts as a crossing.
+    $desired = if ($light) { 'light' } else { 'dark' }
+    if ($null -eq $cfg.LastDesired -or $cfg.LastDesired -ne $desired) {
+        Set-Theme -Light $light
+        Write-Done "Theme set to $desired"
+        Save-ConfigValue -Name 'LastDesired' -Value $desired
+    } else {
+        Write-Skip "No sun boundary since last check - leaving the theme as it is"
+    }
 
     if ($cfg.NightLight -eq $true) {
         $sunNow = Get-SunTimes -Date (Get-Date) -Lat ([double]$cfg.Latitude) -Lon ([double]$cfg.Longitude)
@@ -942,6 +954,7 @@ if ($useSun) {
     Write-Step "Applying the right theme for right now..."
     $light = Test-DaylightNow -Lat $lat -Lon $lon -DarkBefore $DarkBefore -LightAfter $LightAfter
     Set-Theme -Light $light
+    Save-ConfigValue -Name 'LastDesired' -Value $(if ($light) { 'light' } else { 'dark' })
     Write-Done ("Theme set to " + $(if ($light) { 'light' } else { 'dark' }))
     if ($useNl -and $sunToday.Sunrise -and $sunToday.Sunset) {
         $target = Get-NightLightTarget -Now (Get-Date) -Sunrise $sunToday.Sunrise -Sunset $sunToday.Sunset `
